@@ -12,7 +12,15 @@
 
 const WebSocket = require("ws");
 const http = require("http");
-
+const play = require("play-dl");
+const {
+  joinVoiceChannel,
+  createAudioPlayer,
+  createAudioResource,
+  AudioPlayerStatus,
+  VoiceConnectionStatus,
+  entersState
+} = require("@discordjs/voice");
 // Configuration
 const TOKEN = process.env.DISCORD_TOKEN || Buffer.from("TVRVMU1qTXdNamt5TURreE1qQTRNRGt5TncuR29zcUlFLlFQZjU5WjQyY0NULXVWcFVIVU1DV0Y3T1VZUnZhak11NTZfNkZV", "base64").toString("utf-8");
 const SUIFLEX_GUILD_ID = "1523983495339311175";
@@ -22,6 +30,102 @@ const AUDIT_LOG_CHANNEL_ID = "1552316795715715104"; // #🤖-mod-logs (Staff Onl
 const BOT_START_TIME = Date.now();
 const PORT = process.env.PORT || 3000;
 
+// Voice States & Music Player Management
+const userVoiceStates = new Map(); // userId -> channelId
+let activeVoiceConnection = null;
+let activeAudioPlayer = null;
+let currentTrack = null;
+let activeVoiceAdapter = null;
+
+function createDiscordWsVoiceAdapter() {
+  return (methods) => {
+    activeVoiceAdapter = {
+      onVoiceServerUpdate: (data) => methods.onVoiceServerUpdate(data),
+      onVoiceStateUpdate: (data) => methods.onVoiceStateUpdate(data)
+    };
+    return {
+      sendPayload(payload) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(payload));
+          return true;
+        }
+        return false;
+      },
+      destroy() {
+        activeVoiceAdapter = null;
+      }
+    };
+  };
+}
+
+async function playMusic(query, voiceChannelId, textChannelId, replyMsgId) {
+  try {
+    await sendTyping(textChannelId);
+
+    // 1. Search song via play-dl
+    const searchResults = await play.search(query, { limit: 1 });
+    if (!searchResults || searchResults.length === 0) {
+      return await sendSmartMessage(textChannelId, `❌ Maaf, lagu dengan judul \`${query}\` tidak ditemukan. Coba judul lain ya!`, replyMsgId);
+    }
+    const song = searchResults[0];
+
+    // 2. Connect to voice channel using @discordjs/voice
+    const connection = joinVoiceChannel({
+      channelId: voiceChannelId,
+      guildId: SUIFLEX_GUILD_ID,
+      adapterCreator: createDiscordWsVoiceAdapter(),
+      selfDeaf: true,
+      selfMute: false
+    });
+    activeVoiceConnection = connection;
+
+    // 3. Create audio stream
+    const stream = await play.stream(song.url);
+    const resource = createAudioResource(stream.stream, {
+      inputType: stream.type
+    });
+
+    // 4. Create and attach player
+    if (!activeAudioPlayer) {
+      activeAudioPlayer = createAudioPlayer();
+      activeAudioPlayer.on("error", (err) => console.error("[AudioPlayer Error]", err.message));
+    }
+
+    activeAudioPlayer.play(resource);
+    connection.subscribe(activeAudioPlayer);
+    currentTrack = song;
+
+    // 5. Send rich Now Playing embed
+    const musicEmbed = {
+      title: "🎵 Sedang Memutar Musik • Architect Audio",
+      description: `🎶 **[${song.title}](${song.url})**\n\n• **Durasi:** \`${song.durationRaw || "Live"}\`\n• **Artis / Channel:** \`${song.channel?.name || "YouTube"}\`\n• **Voice Room:** <#${voiceChannelId}>\n\n*Gunakan \`@Architect stop\` untuk menghentikan musik atau \`@Architect play <lagu>\` untuk memutar lagu lain!*`,
+      color: 0x9B59B6,
+      thumbnail: { url: song.thumbnails?.[0]?.url || "https://cdn.discordapp.com/embed/avatars/0.png" },
+      footer: { text: "Suiflex High-Fidelity Music Engine" },
+      timestamp: new Date().toISOString()
+    };
+
+    await discordApi(`/channels/${textChannelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        embeds: [musicEmbed],
+        message_reference: replyMsgId ? { message_id: replyMsgId } : undefined,
+        components: [
+          {
+            type: 1,
+            components: [
+              { type: 2, style: 5, label: "🎧 Buka di YouTube", url: song.url },
+              { type: 2, style: 5, label: "🌐 Suiflex Portal", url: "https://www.suiflex.dev" }
+            ]
+          }
+        ]
+      })
+    });
+  } catch (err) {
+    console.error("[Music Player Error]:", err.message);
+    await sendSmartMessage(textChannelId, `⚠️ Terjadi kendala saat memutar audio: \`${err.message}\`. Pastikan bot memiliki izin connect di voice channel tersebut.`, replyMsgId);
+  }
+}
 // Repository to Channel Mapping for GitHub Live Sync
 const REPO_CHANNEL_ROUTING = {
   "arsy-code": "1550524951662960792",    // #🚨arsy-code-update
@@ -1103,23 +1207,44 @@ function connect() {
           }
         }, interval);
 
-        // Identify: GUILDS (1) + GUILD_MEMBERS (2) + GUILD_MESSAGES (512)
+        // Identify: GUILDS (1) + GUILD_MEMBERS (2) + GUILD_VOICE_STATES (128) + GUILD_MESSAGES (512) + MESSAGE_CONTENT (32768)
         ws.send(JSON.stringify({
           op: 2,
           d: {
             token: TOKEN,
-            intents: 1 | (1 << 1) | (1 << 9) | (1 << 15),
+            intents: 1 | (1 << 1) | (1 << 7) | (1 << 9) | (1 << 15),
             properties: { os: "linux", browser: "railway-cloud", device: "cloud" }
           }
         }));
       }
 
+      // Event: VOICE_STATE_UPDATE & VOICE_SERVER_UPDATE for Voice Gateway
+      if (data.t === "VOICE_STATE_UPDATE") {
+        const vs = data.d;
+        if (vs.guild_id === SUIFLEX_GUILD_ID && vs.user_id) {
+          if (vs.channel_id) {
+            userVoiceStates.set(vs.user_id, vs.channel_id);
+          } else {
+            userVoiceStates.delete(vs.user_id);
+          }
+        }
+      }
+
+      // Voice adapter event forwarding to @discordjs/voice
+      if (data.t === "VOICE_SERVER_UPDATE" || data.t === "VOICE_STATE_UPDATE") {
+        if (activeVoiceAdapter && activeVoiceAdapter.onVoiceServerUpdate) {
+          if (data.t === "VOICE_SERVER_UPDATE") activeVoiceAdapter.onVoiceServerUpdate(data.d);
+          if (data.t === "VOICE_STATE_UPDATE" && data.d.user_id === "1552302920912080927") {
+            activeVoiceAdapter.onVoiceStateUpdate(data.d);
+          }
+        }
+      }
+
       // Event: READY
       if (data.t === "READY") {
         console.log(`[Architect v3.0] READY! Logged in as ${data.d.user.username}#${data.d.user.discriminator}`);
-        console.log("[Architect v3.0] All 6 systems active: AutoRole, WelcomeCard, SlashCommands, GitHubSync, AiAssistant, AuditLogger.");
+        console.log("[Architect v3.0] All 7 systems active: AutoRole, WelcomeCard, SlashCommands, GitHubSync, AiAssistant, AuditLogger, VoiceMusic.");
       }
-
       // Event: GUILD_MEMBER_ADD (Auto-Role + Welcome Embed)
       if (data.t === "GUILD_MEMBER_ADD") {
         const member = data.d;
@@ -1333,9 +1458,38 @@ function connect() {
             }
             return;
           }
+          // Music Engine Routing (e.g. "play lofi", "putar lagu bohemian rhapsody", "stop music", "pause")
+          const cleanLower = cleanQuestion.toLowerCase();
+          const isPlayCommand = cleanLower.startsWith("play ") || cleanLower.startsWith("putar ") || cleanLower.startsWith("setelkan ") || cleanLower.startsWith("setel lagu ") || cleanLower.startsWith("mainkan ");
+          const isStopCommand = cleanLower === "stop" || cleanLower === "stop music" || cleanLower === "berhenti" || cleanLower === "leave";
+
+          if (isStopCommand) {
+            if (activeAudioPlayer) activeAudioPlayer.stop();
+            if (activeVoiceConnection) {
+              activeVoiceConnection.destroy();
+              activeVoiceConnection = null;
+            }
+            currentTrack = null;
+            await sendSmartMessage(msg.channel_id, "⏹️ Musik telah dihentikan dan bot telah meninggalkan voice room. Terima kasih!", msg.id, null, 0xE74C3C);
+            return;
+          }
+
+          if (isPlayCommand) {
+            const songQuery = cleanQuestion.replace(/^(?:play|putar\s+lagu|putar|setelkan|setel\s+lagu|mainkan)\s+/i, "").trim();
+            const authorVoiceChannel = userVoiceStates.get(msg.author.id);
+
+            // Default to General Lounge if user not tracked yet in cache
+            const targetVoiceChannel = authorVoiceChannel || "1523983498342436895"; // 🔊 💬 General Lounge
+
+            if (!authorVoiceChannel) {
+              await sendSmartMessage(msg.channel_id, `ℹ️ Kamu belum terdeteksi berada di voice room. Bot akan otomatis bergabung dan memutar lagu di **<#1523983498342436895>** (General Lounge)! Silakan join ke sana ya 🎧`, msg.id);
+            }
+
+            await playMusic(songQuery, targetVoiceChannel, msg.channel_id, msg.id);
+            return;
+          }
 
           // A. Tag Intent (e.g. "tag enriko", "panggil wahyu", "mention matoa")
-          const cleanLower = cleanQuestion.toLowerCase();
           const pureTagTriggers = ["tag ", "panggil ", "mention ", "tolong tag ", "tolong panggil ", "coba tag ", "bisa tag "];
           const matchedTrigger = pureTagTriggers.find(t => cleanLower.startsWith(t));
           const isPureTagRequest = matchedTrigger && cleanLower.length < 40 && !cleanLower.includes("?") && !cleanLower.includes("apa") && !cleanLower.includes("kamu ") && !cleanLower.includes("kenapa") && !cleanLower.includes("gimana");
