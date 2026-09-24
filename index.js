@@ -608,17 +608,27 @@ function parsePollFromText(text) {
   // Case C: Question mark "Siapa terbaik? A, B"
   else if (clean.includes("?")) {
     const idx = clean.indexOf("?");
-    question = clean.slice(0, idx + 1).trim();
-    const rest = clean.slice(idx + 1).trim();
-    if (rest.includes(" atau ")) {
-      options = rest.split(/\s+atau\s+/i).map(s => s.trim()).filter(Boolean);
-    } else {
-      options = rest.split(/[,;\n]/).map(s => s.trim().replace(/^[-•*0-9.]+\s*/, "")).filter(Boolean);
+    const beforeQ = clean.slice(0, idx).trim();
+    const afterQ = clean.slice(idx + 1).trim();
+
+    if (afterQ.includes(" atau ")) {
+      question = clean.slice(0, idx + 1).trim();
+      options = afterQ.split(/\s+atau\s+/i).map(s => s.trim()).filter(Boolean);
+    } else if (afterQ.length > 0) {
+      question = clean.slice(0, idx + 1).trim();
+      options = afterQ.split(/[,;\n]/).map(s => s.trim().replace(/^[-•*0-9.]+\s*/, "")).filter(Boolean);
+    } else if (beforeQ.toLowerCase().includes(" atau ")) {
+      // Options are inside the question itself (e.g. "mending rust atau go untuk backend api?")
+      question = clean.slice(0, idx + 1).trim();
+      options = beforeQ.split(/\s+atau\s+/i).map(s => {
+        // Remove conversational prefixes like 'mending', 'pilih', 'bagusan'
+        return s.trim().replace(/^(mending|pilih|bagusan|antara|lebih baik)\s+/i, "");
+      }).filter(Boolean);
     }
   }
-  // Case D: Separated by " atau " (e.g. "warna hitam atau putih")
+  // Case D: Separated by " atau " without question mark (e.g. "warna hitam atau putih")
   else if (clean.toLowerCase().includes(" atau ")) {
-    options = clean.split(/\s+atau\s+/i).map(s => s.trim()).filter(Boolean);
+    options = clean.split(/\s+atau\s+/i).map(s => s.trim().replace(/^(mending|pilih|bagusan|antara)\s+/i, "")).filter(Boolean);
     question = `Pilih: ${options.join(" atau ")}?`;
   }
   // Case E: Separated by " vs "
