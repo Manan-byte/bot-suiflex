@@ -1305,25 +1305,31 @@ function connect() {
           // 0. If replying to an image, treat it as an image modification / revision!
           // 0. If replying to an image, intelligently analyze whether it's a question or a revision!
           if (referencedImagePrompt) {
-            const decision = await handleImageReplySmart(referencedImagePrompt, cleanQuestion);
-            if (decision.startsWith("CREATE_DOC:")) {
-              const docTopic = decision.replace(/^CREATE_DOC:\s*/i, "").trim() || "Dokumentasi";
-              const docPrompt = `Buatkan dokumen komprehensif, terstruktur, dan profesional dalam format Markdown mengenai: "${docTopic}" (berdasarkan konteks gambar sebelumnya: "${referencedImagePrompt}"). Dokumen harus mencakup: Judul, Karakteristik/Spesifikasi Utama, Analisis & Fakta Menarik, Panduan/Peran, dan Kesimpulan.`;
-              const docText = await generateAiAnswer(docPrompt, msg.author.id, msg.channel_id);
-              await sendSmartMessage(msg.channel_id, docText, msg.id, null, 0x1ABC9C);
-            } else if (decision.startsWith("GENERATE_IMAGE:")) {
-              const newPrompt = decision.replace(/^GENERATE_IMAGE:\s*/i, "").trim();
-              const imgPayload = await generateAiImage(newPrompt, msg.author.id);
-              await discordApi(`/channels/${msg.channel_id}/messages`, {
-                method: "POST",
-                body: JSON.stringify({
-                  ...imgPayload,
-                  message_reference: { message_id: msg.id }
-                })
-              });
-            } else {
-              // Conversational answer to user's question about the image
-              await sendSmartMessage(msg.channel_id, decision, msg.id);
+            // Keep typing indicator pulsing so Discord user knows bot is working
+            const typingInterval = setInterval(() => sendTyping(msg.channel_id), 8000);
+            try {
+              const decision = await handleImageReplySmart(referencedImagePrompt, cleanQuestion);
+              if (decision.startsWith("CREATE_DOC:")) {
+                const docTopic = decision.replace(/^CREATE_DOC:\s*/i, "").trim() || "Dokumentasi";
+                const docPrompt = `Buatkan dokumen komprehensif, terstruktur, dan profesional dalam format Markdown mengenai: "${docTopic}" (berdasarkan konteks gambar sebelumnya: "${referencedImagePrompt}"). Dokumen harus mencakup: Judul, Karakteristik/Spesifikasi Utama, Analisis & Fakta Menarik, Panduan/Peran, dan Kesimpulan.`;
+                const docText = await generateAiAnswer(docPrompt, msg.author.id, msg.channel_id);
+                await sendSmartMessage(msg.channel_id, docText, msg.id, null, 0x1ABC9C);
+              } else if (decision.startsWith("GENERATE_IMAGE:")) {
+                const newPrompt = decision.replace(/^GENERATE_IMAGE:\s*/i, "").trim();
+                const imgPayload = await generateAiImage(newPrompt, msg.author.id);
+                await discordApi(`/channels/${msg.channel_id}/messages`, {
+                  method: "POST",
+                  body: JSON.stringify({
+                    ...imgPayload,
+                    message_reference: { message_id: msg.id }
+                  })
+                });
+              } else {
+                // Conversational answer to user's question about the image
+                await sendSmartMessage(msg.channel_id, decision, msg.id);
+              }
+            } finally {
+              clearInterval(typingInterval);
             }
             return;
           }
