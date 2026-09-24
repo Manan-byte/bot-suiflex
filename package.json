@@ -1,0 +1,15 @@
+{
+  "name": "suiflex-autorole-bot",
+  "version": "1.0.0",
+  "description": "Suiflex Discord Auto-Role 24/7 Cloud Bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@railway/cli": "^5.62.1"
+  }
+}
