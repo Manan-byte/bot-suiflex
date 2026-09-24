@@ -663,16 +663,20 @@ Kamu adalah asisten cerdas untuk bot Discord Architect di Suiflex.
 Pengguna sedang me-reply pesan gambar yang sebelumnya di-generate dengan prompt: "${originalPrompt}".
 Isi pesan reply pengguna: "${userReply}".
 
-Tentukan niat pengguna:
-A. Jika pengguna BERTANYA atau MENGOMENTARI gambar (misal: "apakah ini anjing?", "ini apa?", "bagus banget", "model apa ini?", "ini anjing bukan?", "apakah ini anjing cek lagi"):
-   Jawablah secara santun, ramah, dan informatif sebagai teks biasa (1-2 paragraf pendek). Jelaskan objek apa yang sebenarnya ada di gambar sesuai prompt sebelumnya.
-B. Jika pengguna MEMINTA REVISI/MODIFIKASI/GENERATE GAMBAR BARU (misal: "ganti jadi anjing", "tambah sayap", "buatkan versi malam", "bikin anjingnya", "ubah warna", "rubah gambar ini jadi anjing"):
+Tentukan niat pengguna secara teliti:
+A. Jika pengguna MEMINTA DOKUMEN / PENJELASAN / TEKS / ARTIKEL seputar objek di gambar (misal: "buat doc nya", "bikin dokumennya", "jelaskan", "buatkan artikel", "deskripsikan", "tulis spesifikasinya"):
+   Tuliskan HANYA baris perintah dengan format:
+   CREATE_DOC: <topik atau judul dokumen berdasarkan objek di gambar>
+
+B. Jika pengguna MEMINTA REVISI / MODIFIKASI / MENGUBAH GAMBAR (misal: "ganti jadi anjing", "tambah sayap", "buat versi malam", "bikin anjingnya", "ubah warna", "rubah gambar"):
    Tuliskan HANYA baris perintah dengan format:
    GENERATE_IMAGE: <prompt bahasa inggris yang sudah disintesis bersih dan siap digenerate>
 
+C. Jika pengguna BERTANYA atau MENGOMENTARI gambar (misal: "apakah ini anjing?", "ini apa?", "bagus banget", "model apa ini?"):
+   Jawablah secara santun, ramah, dan informatif sebagai teks biasa (1-2 paragraf pendek). Jelaskan objek apa yang sebenarnya ada di gambar.
+
 Jawab sekarang:
 `.trim();
-
   try {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`, {
       method: "POST",
@@ -1292,7 +1296,12 @@ function connect() {
           // 0. If replying to an image, intelligently analyze whether it's a question or a revision!
           if (referencedImagePrompt) {
             const decision = await handleImageReplySmart(referencedImagePrompt, cleanQuestion);
-            if (decision.startsWith("GENERATE_IMAGE:")) {
+            if (decision.startsWith("CREATE_DOC:")) {
+              const docTopic = decision.replace(/^CREATE_DOC:\s*/i, "").trim() || "Dokumentasi";
+              const docPrompt = `Buatkan dokumen komprehensif, terstruktur, dan profesional dalam format Markdown mengenai: "${docTopic}" (berdasarkan konteks gambar sebelumnya: "${referencedImagePrompt}"). Dokumen harus mencakup: Judul, Karakteristik/Spesifikasi Utama, Analisis & Fakta Menarik, Panduan/Peran, dan Kesimpulan.`;
+              const docText = await generateAiAnswer(docPrompt, msg.author.id, msg.channel_id);
+              await sendSmartMessage(msg.channel_id, docText, msg.id, null, 0x1ABC9C);
+            } else if (decision.startsWith("GENERATE_IMAGE:")) {
               const newPrompt = decision.replace(/^GENERATE_IMAGE:\s*/i, "").trim();
               const imgPayload = await generateAiImage(newPrompt, msg.author.id);
               await discordApi(`/channels/${msg.channel_id}/messages`, {
