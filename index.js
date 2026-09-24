@@ -1625,14 +1625,24 @@ function connect() {
           // 11. /poll (Interactive Community Poll)
           if (cmdName === "poll") {
             const question = cmdData.options?.find(o => o.name === "question")?.value || "Jajak Pendapat";
-            const optionsStr = cmdData.options?.find(o => o.name === "options")?.value || "";
-            const options = optionsStr.split(/[,|;\n]/).map(s => s.trim()).filter(Boolean);
 
-            if (options.length < 2) {
-              await reply({ content: "❌ Harap berikan minimal 2 pilihan jawaban (pisahkan dengan koma).", flags: 64 });
-              return;
+            // Support both separate options (option1..option5) and legacy options string
+            let options = [];
+            for (let i = 1; i <= 5; i++) {
+              const optVal = cmdData.options?.find(o => o.name === `option${i}`)?.value;
+              if (optVal && optVal.trim()) {
+                options.push(optVal.trim());
+              }
+            }
+            if (options.length === 0) {
+              const optionsStr = cmdData.options?.find(o => o.name === "options")?.value || "";
+              options = optionsStr.split(/[,|;\n]/).map(s => s.trim()).filter(Boolean);
             }
 
+            if (options.length < 2) {
+              await reply({ content: "❌ Harap berikan minimal 2 pilihan jawaban (option1 dan option2).", flags: 64 });
+              return;
+            }
             const pollPayload = createPollPayload(question, options, member.user.id);
             await reply(pollPayload);
 
