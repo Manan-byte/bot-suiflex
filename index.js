@@ -139,38 +139,47 @@ async function playMusic(query, voiceChannelId, textChannelId, replyMsgId) {
     if (!song) {
       return await sendSmartMessage(textChannelId, `❌ Maaf, lagu dengan judul \`${query}\` tidak ditemukan. Coba judul lagu atau nama penyanyi lain ya!`, replyMsgId);
     }
+    // 2. Connect to voice channel using @discordjs/voice (or reuse existing connection)
+    let connection = activeVoiceConnection;
+    if (!connection || connection.state.status === VoiceConnectionStatus.Destroyed) {
+      connection = joinVoiceChannel({
+        channelId: voiceChannelId,
+        guildId: SUIFLEX_GUILD_ID,
+        adapterCreator: createDiscordWsVoiceAdapter(),
+        selfDeaf: false,
+        selfMute: false
+      });
+      activeVoiceConnection = connection;
+    }
 
-    // 2. Connect to voice channel using @discordjs/voice
-    const connection = joinVoiceChannel({
-      channelId: voiceChannelId,
-      guildId: SUIFLEX_GUILD_ID,
-      adapterCreator: createDiscordWsVoiceAdapter(),
-      selfDeaf: true,
-      selfMute: false
-    });
-    activeVoiceConnection = connection;
+    // CRITICAL: Wait for UDP voice handshake to be 100% READY before playing audio!
+    try {
+      console.log(`[VoiceConnection] Waiting for voice UDP connection ready in ${voiceChannelId}...`);
+      await entersState(connection, VoiceConnectionStatus.Ready, 15000);
+      console.log(`[VoiceConnection] Handshake completed! Ready to transmit packets.`);
+    } catch (conErr) {
+      console.error("[VoiceConnection Handshake Failed]:", conErr.message);
+    }
 
     // 3. Create audio resource from verified streamable source
     let resource;
     if (song.streamUrl) {
-      resource = createAudioResource(song.streamUrl);
+      resource = createAudioResource(song.streamUrl, {
+        inlineVolume: true
+      });
+      if (resource.volume) resource.volume.setVolume(1.0);
     } else {
-      // Provide clean stream fallback
       const fallbackUrl = "https://cdnt-preview.dzcdn.net/api/1/1/9/7/7/0/977625c9319d9d63d8f7a184d2e31e01.mp3";
-      resource = createAudioResource(fallbackUrl);
+      resource = createAudioResource(fallbackUrl, { inlineVolume: true });
+      if (resource.volume) resource.volume.setVolume(1.0);
     }
 
-    // 4. Create and attach player with connection lifecycle monitoring
+    // 4. Create and attach player with subscription
     if (!activeAudioPlayer) {
       activeAudioPlayer = createAudioPlayer();
       activeAudioPlayer.on("error", (err) => console.error("[AudioPlayer Error]", err.message));
-      activeAudioPlayer.on(AudioPlayerStatus.Playing, () => console.log("[AudioPlayer] Successfully playing audio resource!"));
+      activeAudioPlayer.on(AudioPlayerStatus.Playing, () => console.log("[AudioPlayer] Transmitting live audio to voice channel!"));
     }
-
-    connection.on(VoiceConnectionStatus.Ready, () => {
-      console.log(`[VoiceConnection] Connection ready to transmit audio in channel ${voiceChannelId}!`);
-    });
-    connection.on("error", (err) => console.error("[VoiceConnection Error]", err.message));
 
     activeAudioPlayer.play(resource);
     connection.subscribe(activeAudioPlayer);
