@@ -1589,6 +1589,34 @@ function connect() {
             }
           }
 
+          // G. Help / Panduan Intent (e.g. "help", "bantuan", "panduan", "aturan bot")
+          if (cleanLower === "help" || cleanLower === "bantuan" || cleanLower === "panduan" || cleanLower === "cara pakai" || cleanLower === "aturan bot") {
+            const helpText = [
+              "### 📖 Panduan Interaksi & Aturan Bot Architect",
+              "",
+              "• **Prinsip Utama:** Bot selalu membaca & memahami maksud Anda secara utuh sebelum mengeksekusi.",
+              "",
+              "• 🎵 **Putar Musik Mandiri:**",
+              "  `@Architect play <judul>` • `@Architect putar lagu <nama>` • `@Architect stop`",
+              "",
+              "• 🎨 **Generator Gambar AI:**",
+              "  `@Architect gambar <konsep>` (contoh: `@Architect gambar kuda terbang`)",
+              "",
+              "• 📄 **Dokumen Teks & Trik Reply:**",
+              "  `@Architect buatkan dokumen <topik>` atau **reply gambar apa saja** dengan kata `buat doc nya`!",
+              "",
+              "• 📊 **Polling & Voting:**",
+              "  `@Architect buatkan poll Opsi 1 atau Opsi 2?`",
+              "",
+              "• 💬 **Aturan Lintas Channel:**",
+              "  • <#1540268259645857863>: Bebas diskusi topik apa saja.",
+              "  • Channel Modul (<#1540272970608541746>, <#1540273362784493648>, dll): Khusus modul terkait.",
+              "",
+              "Panduan lengkap selalu dapat dibaca di <#1543809459099406426>."
+            ].join("\n");
+            await sendSmartMessage(msg.channel_id, helpText, msg.id, null, 0x3498DB);
+            return;
+          }
           // G. Clear Chat Intent for Admins/Mods (e.g. "clear 10", "hapus 20 pesan", "bersihkan 5 chat")
           const clearMatch = cleanLower.match(/^(?:clear|hapus|bersihkan)\s+(\d+)/i);
           if (clearMatch) {
