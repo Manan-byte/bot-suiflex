@@ -1559,6 +1559,7 @@ function connect() {
             const rawSongQuery = cleanQuestion.replace(/^(?:play|putar\s+lagu|putar|setelkan|setel\s+lagu|mainkan)\s+/i, "").trim();
             const songQuery = rawSongQuery.replace(/^(?:music|musik|lagu)\s+/i, "").trim() || rawSongQuery;
 
+            const authorVoiceChannel = userVoiceStates.get(msg.author.id);
             // Default to General Lounge if user not tracked yet in cache
             const targetVoiceChannel = authorVoiceChannel || "1523983498342436895"; // 🔊 💬 General Lounge
 
