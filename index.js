@@ -1386,22 +1386,9 @@ function connect() {
               .replace(/^(buatkan dokumen|bikin dokumen|buatkan doc|tuliskan dokumen)\s*/i, "")
               .trim();
 
-            const docPrompt = `Buatkan dokumen teknis profesional yang terstruktur lengkap dalam format Markdown mengenai topik: "${topic}". Dokumen harus mencakup: Judul, Pendahuluan, Arsitektur/Spesifikasi, Alur Kerja, Panduan Implementasi, dan Kesimpulan.`;
+            const docPrompt = `Buatkan dokumen teknis profesional yang terstruktur lengkap dalam format Markdown mengenai topik: "${topic}". Dokumen harus mencakup: Judul, Pendahuluan, Arsitektur/Spesifikasi, Alur Kerja, Panduan Implementasi, dan Kesimpulan. Gunakan format bullet points vertikal yang rapi.`;
             const docText = await generateAiAnswer(docPrompt, msg.author.id, msg.channel_id);
-
-            await discordApi(`/channels/${msg.channel_id}/messages`, {
-              method: "POST",
-              body: JSON.stringify({
-                embeds: [{
-                  title: `📄 Dokumen: ${topic}`,
-                  description: docText.length > 4000 ? docText.slice(0, 3950) + "...\n*(Dokumen terpotong batas maksimal)*" : docText,
-                  color: 0x1ABC9C,
-                  footer: { text: "Dokumen Resmi • Dibuat oleh Suiflex Architect AI" },
-                  timestamp: new Date().toISOString()
-                }],
-                message_reference: { message_id: msg.id }
-              })
-            });
+            await sendSmartMessage(msg.channel_id, docText, msg.id, null, 0x1ABC9C);
             return;
           }
 
