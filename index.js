@@ -529,12 +529,12 @@ CRITICAL UNDERSTANDING RULES:
       {
         type: 1,
         components: [
-          {
+          ...(imageUrl.length <= 512 ? [{
             type: 2,
             style: 5,
             label: "🖼️ Buka Gambar Resolusi Penuh",
             url: imageUrl
-          },
+          }] : []),
           {
             type: 2,
             style: 5,
