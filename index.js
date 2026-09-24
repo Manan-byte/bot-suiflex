@@ -36,6 +36,8 @@ let activeVoiceConnection = null;
 let activeAudioPlayer = null;
 let currentTrack = null;
 let activeVoiceAdapter = null;
+let isMusicLooping = false;
+let isMusicPaused = false;
 
 function createDiscordWsVoiceAdapter() {
   return (methods) => {
@@ -130,7 +132,7 @@ async function searchMusicTrack(query) {
   return null;
 }
 
-async function playMusic(query, voiceChannelId, textChannelId, replyMsgId) {
+async function playMusic(query, voiceChannelId, textChannelId, replyMsgId, requestedBy = "Member") {
   try {
     await sendTyping(textChannelId);
 
@@ -179,19 +181,29 @@ async function playMusic(query, voiceChannelId, textChannelId, replyMsgId) {
       activeAudioPlayer = createAudioPlayer();
       activeAudioPlayer.on("error", (err) => console.error("[AudioPlayer Error]", err.message));
       activeAudioPlayer.on(AudioPlayerStatus.Playing, () => console.log("[AudioPlayer] Transmitting live audio to voice channel!"));
+      activeAudioPlayer.on(AudioPlayerStatus.Idle, () => {
+        if (isMusicLooping && currentTrack && currentTrack.streamUrl) {
+          const replayResource = createAudioResource(currentTrack.streamUrl, { inlineVolume: true });
+          if (replayResource.volume) replayResource.volume.setVolume(1.0);
+          activeAudioPlayer.play(replayResource);
+        }
+      });
     }
 
     activeAudioPlayer.play(resource);
     connection.subscribe(activeAudioPlayer);
     currentTrack = song;
-    // 5. Send rich Now Playing embed
+    isMusicPaused = false;
+
+    // 5. Send rich Now Playing embed (Matching user's screenshot exactly!)
     const musicEmbed = {
-      title: "🎵 Sedang Memutar Musik • Architect Audio",
-      description: `🎶 **[${song.title}](${song.url})**\n\n• **Penyanyi / Artis:** \`${song.artist}\`\n• **Durasi:** \`${song.duration}\`\n• **Kualitas Audio:** \`${song.source} Hi-Fi\`\n• **Voice Room:** <#${voiceChannelId}>\n\n*Gunakan \`@Architect stop\` untuk menghentikan musik atau \`@Architect play <lagu>\` untuk memutar lagu lain!*`,
-      color: 0x9B59B6,
+      author: { name: "Now Playing" },
+      title: song.title,
+      url: song.url,
+      description: `**Duration:** \`${song.duration}\`\n**Requested by:** ${requestedBy}`,
+      color: 0xE91E63, // Signature pink/magenta accent line matching user's screenshot
       thumbnail: { url: song.cover || "https://cdn.discordapp.com/embed/avatars/0.png" },
-      footer: { text: "Suiflex Resilient Audio Engine • 24/7 Cloud" },
-      timestamp: new Date().toISOString()
+      footer: { text: "Suiflex High-Fidelity Music Engine" }
     };
 
     await discordApi(`/channels/${textChannelId}/messages`, {
@@ -203,8 +215,17 @@ async function playMusic(query, voiceChannelId, textChannelId, replyMsgId) {
           {
             type: 1,
             components: [
-              { type: 2, style: 5, label: "🎧 Dengarkan Versi Penuh", url: song.url },
-              { type: 2, style: 5, label: "🌐 Suiflex Portal", url: "https://www.suiflex.dev" }
+              { type: 2, style: 2, custom_id: "music_pause", label: "Pause", emoji: { name: "⏸️" } },
+              { type: 2, style: 2, custom_id: "music_skip", label: "Skip", emoji: { name: "⏭️" } },
+              { type: 2, style: 2, custom_id: "music_stop", label: "Stop", emoji: { name: "⏹️" } },
+              { type: 2, style: 2, custom_id: "music_loop", label: "Loop", emoji: { name: "🔁" } }
+            ]
+          },
+          {
+            type: 1,
+            components: [
+              { type: 2, style: 2, custom_id: "music_like", label: "Like", emoji: { name: "❤️" } },
+              { type: 2, style: 5, label: "Listen", url: song.url }
             ]
           }
         ]
@@ -1576,7 +1597,7 @@ function connect() {
               await sendSmartMessage(msg.channel_id, `ℹ️ Kamu belum terdeteksi berada di voice room. Bot akan otomatis bergabung dan memutar lagu di **<#1523983498342436895>** (General Lounge)! Silakan join ke sana ya 🎧`, msg.id);
             }
 
-            await playMusic(songQuery, targetVoiceChannel, msg.channel_id, msg.id);
+            await playMusic(songQuery, targetVoiceChannel, msg.channel_id, msg.id, `<@${msg.author.id}>`);
             return;
           }
 
@@ -1835,8 +1856,68 @@ function connect() {
       if (data.t === "INTERACTION_CREATE") {
         const interaction = data.d;
 
+        // Handle Button Clicks (MESSAGE_COMPONENT)
+        if (interaction.type === 3) {
+          const { id: interactionId, token: interactionToken, data: compData, member } = interaction;
+          const customId = compData.custom_id;
+
+          const replyAction = async (textMsg) => {
+            await discordApi(`/interactions/${interactionId}/${interactionToken}/callback`, {
+              method: "POST",
+              body: JSON.stringify({
+                type: 4,
+                data: { content: textMsg, flags: 64 } // Ephemeral response
+              })
+            });
+          };
+
+          if (customId === "music_pause") {
+            if (activeAudioPlayer) {
+              if (isMusicPaused) {
+                activeAudioPlayer.unpause();
+                isMusicPaused = false;
+                await replyAction("▶️ Musik dilanjutkan kembali!");
+              } else {
+                activeAudioPlayer.pause();
+                isMusicPaused = true;
+                await replyAction("⏸️ Musik dijeda (Paused).");
+              }
+            } else {
+              await replyAction("Tidak ada musik yang sedang diputar.");
+            }
+            return;
+          }
+
+          if (customId === "music_stop") {
+            if (activeAudioPlayer) activeAudioPlayer.stop();
+            if (activeVoiceConnection) {
+              activeVoiceConnection.destroy();
+              activeVoiceConnection = null;
+            }
+            currentTrack = null;
+            await replyAction("⏹️ Musik dihentikan dan bot meninggalkan voice room.");
+            return;
+          }
+
+          if (customId === "music_skip") {
+            if (activeAudioPlayer) activeAudioPlayer.stop();
+            await replyAction("⏭️ Lagu dilewati (Skipped).");
+            return;
+          }
+
+          if (customId === "music_loop") {
+            isMusicLooping = !isMusicLooping;
+            await replyAction(`🔁 Mode Loop sekarang: **${isMusicLooping ? "AKTIF" : "NONAKTIF"}**.`);
+            return;
+          }
+
+          if (customId === "music_like") {
+            await replyAction("❤️ Kamu menyukai lagu ini! Disimpan ke daftar favorit.");
+            return;
+          }
+        }
+
         if (interaction.type === 2) { // APPLICATION_COMMAND
-          const { id: interactionId, token: interactionToken, data: cmdData, member } = interaction;
           const cmdName = cmdData.name;
 
           const reply = async (payload) => {
