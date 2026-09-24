@@ -59,47 +59,24 @@ function createDiscordWsVoiceAdapter() {
 }
 
 async function searchMusicTrack(query) {
-  // Strategy 1: Deezer High-Fidelity Audio API (Direct MP3 CDN, zero-bot-block, 100% reliable)
-  try {
-    const cleanQ = encodeURIComponent(query.trim());
-    const res = await fetch(`https://api.deezer.com/search?q=${cleanQ}&limit=1`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.data && data.data.length > 0) {
-        const track = data.data[0];
-        if (track.preview) {
-          return {
-            title: track.title,
-            artist: track.artist?.name || "Various Artists",
-            duration: `${Math.floor(track.duration / 60)}:${(track.duration % 60).toString().padStart(2, "0")}`,
-            url: track.link,
-            streamUrl: track.preview,
-            cover: track.album?.cover_medium || track.artist?.picture_medium,
-            source: "Deezer HD"
-          };
-        }
-      }
-    }
-  } catch (err) {
-    console.error("[Music Search Deezer Error]:", err.message);
-  }
+  const cleanQ = query.trim();
 
-  // Strategy 2: Apple iTunes High-Bitrate AAC API
+  // Strategy 1: Apple iTunes API (Extremely accurate artist & song matching, clean direct AAC audio stream)
   try {
-    const cleanQ = encodeURIComponent(query.trim());
-    const res = await fetch(`https://itunes.apple.com/search?term=${cleanQ}&entity=song&limit=1`);
+    const res = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(cleanQ)}&entity=song&limit=5`);
     if (res.ok) {
       const data = await res.json();
       if (data.results && data.results.length > 0) {
-        const track = data.results[0];
-        if (track.previewUrl) {
+        // Pick best matching track with preview
+        const track = data.results.find(t => t.previewUrl) || data.results[0];
+        if (track && track.previewUrl) {
           return {
             title: track.trackName,
             artist: track.artistName,
             duration: `${Math.floor(track.trackTimeMillis / 60000)}:${Math.floor((track.trackTimeMillis % 60000) / 1000).toString().padStart(2, "0")}`,
             url: track.trackViewUrl,
             streamUrl: track.previewUrl,
-            cover: track.artworkUrl100,
+            cover: track.artworkUrl100?.replace("100x100bb", "600x600bb") || track.artworkUrl100,
             source: "Apple Music"
           };
         }
@@ -107,6 +84,30 @@ async function searchMusicTrack(query) {
     }
   } catch (err) {
     console.error("[Music Search iTunes Error]:", err.message);
+  }
+
+  // Strategy 2: Deezer Audio API (High-Fidelity MP3 CDN)
+  try {
+    const res = await fetch(`https://api.deezer.com/search?q=${encodeURIComponent(cleanQ)}&limit=5`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.data && data.data.length > 0) {
+        const track = data.data.find(t => t.preview) || data.data[0];
+        if (track && track.preview) {
+          return {
+            title: track.title,
+            artist: track.artist?.name || "Various Artists",
+            duration: `${Math.floor(track.duration / 60)}:${(track.duration % 60).toString().padStart(2, "0")}`,
+            url: track.link,
+            streamUrl: track.preview,
+            cover: track.album?.cover_big || track.album?.cover_medium,
+            source: "Deezer HD"
+          };
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[Music Search Deezer Error]:", err.message);
   }
 
   // Strategy 3: YouTube Search via play-dl fallback
@@ -159,16 +160,21 @@ async function playMusic(query, voiceChannelId, textChannelId, replyMsgId) {
       resource = createAudioResource(fallbackUrl);
     }
 
-    // 4. Create and attach player
+    // 4. Create and attach player with connection lifecycle monitoring
     if (!activeAudioPlayer) {
       activeAudioPlayer = createAudioPlayer();
       activeAudioPlayer.on("error", (err) => console.error("[AudioPlayer Error]", err.message));
+      activeAudioPlayer.on(AudioPlayerStatus.Playing, () => console.log("[AudioPlayer] Successfully playing audio resource!"));
     }
+
+    connection.on(VoiceConnectionStatus.Ready, () => {
+      console.log(`[VoiceConnection] Connection ready to transmit audio in channel ${voiceChannelId}!`);
+    });
+    connection.on("error", (err) => console.error("[VoiceConnection Error]", err.message));
 
     activeAudioPlayer.play(resource);
     connection.subscribe(activeAudioPlayer);
     currentTrack = song;
-
     // 5. Send rich Now Playing embed
     const musicEmbed = {
       title: "🎵 Sedang Memutar Musik • Architect Audio",
@@ -1550,8 +1556,8 @@ function connect() {
           }
 
           if (isPlayCommand) {
-            const songQuery = cleanQuestion.replace(/^(?:play|putar\s+lagu|putar|setelkan|setel\s+lagu|mainkan)\s+/i, "").trim();
-            const authorVoiceChannel = userVoiceStates.get(msg.author.id);
+            const rawSongQuery = cleanQuestion.replace(/^(?:play|putar\s+lagu|putar|setelkan|setel\s+lagu|mainkan)\s+/i, "").trim();
+            const songQuery = rawSongQuery.replace(/^(?:music|musik|lagu)\s+/i, "").trim() || rawSongQuery;
 
             // Default to General Lounge if user not tracked yet in cache
             const targetVoiceChannel = authorVoiceChannel || "1523983498342436895"; // 🔊 💬 General Lounge
