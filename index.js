@@ -638,15 +638,20 @@ function parsePollFromText(text) {
 
 function extractImagePrompt(text) {
   const q = text.toLowerCase().trim();
+  // Avoid treating questions as image generation requests (e.g. "ini gambar apa?", "mengapa gambar ini begini?")
+  if (q.includes("?") || q.startsWith("ini gambar") || q.startsWith("apakah") || q.startsWith("kenapa") || q.startsWith("mengapa")) {
+    return null;
+  }
+
   const imageTriggers = [
     "buatkan gambar", "buat kan gambar", "bikin gambar", "bikin kan gambar",
     "gambarkan", "generate gambar", "buat gambar", "generate image",
-    "gambar ", "lukiskan", "foto "
+    "lukiskan", "foto "
   ];
 
-  const matched = imageTriggers.find(t => q.includes(t));
+  const matched = imageTriggers.find(t => q.includes(t)) || (q.startsWith("gambar ") && !q.includes(" apa ") && !q.includes(" siapa "));
   if (matched) {
-    const regex = new RegExp(`(?:tolong\\s+|coba\\s+|bisa\\s+)?(?:${imageTriggers.join("|")})\\s*:?\\s*`, "i");
+    const regex = new RegExp(`(?:tolong\\s+|coba\\s+|bisa\\s+)?(?:${imageTriggers.join("|")}|gambar\\s+)\\s*:?\\s*`, "i");
     const prompt = text.replace(regex, "").trim();
     return prompt || "futuristic digital art";
   }
@@ -1392,44 +1397,28 @@ function connect() {
           }
 
           // E. Stack Overview Intent (e.g. "stack", "peta modul", "daftar modul", "apa saja modul suiflex")
-          if (cleanLower === "stack" || cleanLower.includes("peta modul") || cleanLower.includes("daftar modul") || cleanLower.includes("modul apa saja")) {
-            await discordApi(`/channels/${msg.channel_id}/messages`, {
-              method: "POST",
-              body: JSON.stringify({
-                content: formatModuleAnswer("suiflex") || "Berikut 10 modul rekayasa Suiflex:",
-                embeds: [{
-                  title: "📦 10 Modul Ekosistem Suiflex Open Engineering",
-                  description: "Kunjungi portal dokumentasi resmi untuk mempelajari seluruh modul:\n👉 **https://www.suiflex.dev**",
-                  color: 0xF1C40F
-                }],
-                message_reference: { message_id: msg.id },
+          if (cleanLower === "stack" || cleanLower === "peta modul" || cleanLower === "daftar modul" || cleanLower === "modul apa saja") {
+            const overviewText = formatModuleAnswer("suiflex") || "Berikut 10 modul rekayasa Suiflex:";
+            const stackComponents = [
+              {
+                type: 1,
                 components: [
-                  {
-                    type: 1,
-                    components: [
-                      { type: 2, style: 5, label: "🌐 Website Resmi", url: "https://www.suiflex.dev" },
-                      { type: 2, style: 5, label: "🐙 Organisasi GitHub", url: "https://github.com/suiflex" }
-                    ]
-                  }
+                  { type: 2, style: 5, label: "🌐 Website Resmi", url: "https://www.suiflex.dev" },
+                  { type: 2, style: 5, label: "🐙 Organisasi GitHub", url: "https://github.com/suiflex" }
                 ]
-              })
-            });
+              }
+            ];
+            await sendSmartMessage(msg.channel_id, overviewText, msg.id, stackComponents, 0xF1C40F);
             return;
           }
 
           // F. Docs Intent (e.g. "docs arsy", "dokumentasi rdb", "cara install forgeguard")
-          const docsMatch = cleanLower.match(/^(?:docs|dokumentasi|cara install)\s+([a-z0-9_-]+)/i);
+          const docsMatch = cleanLower.match(/^(?:docs|dokumentasi|cara install)\s+([a-z0-9_-]+)$/i);
           if (docsMatch) {
             const targetModKey = Object.keys(SUIFLEX_MODULES).find(k => k.includes(docsMatch[1]) || docsMatch[1].includes(k));
             if (targetModKey) {
               const docContent = formatModuleAnswer(targetModKey);
-              await discordApi(`/channels/${msg.channel_id}/messages`, {
-                method: "POST",
-                body: JSON.stringify({
-                  content: docContent,
-                  message_reference: { message_id: msg.id }
-                })
-              });
+              await sendSmartMessage(msg.channel_id, docContent, msg.id, null, 0x1ABC9C);
               return;
             }
           }
