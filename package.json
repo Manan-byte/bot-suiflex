@@ -15,7 +15,9 @@
     "prism-media": "^1.3.5",
     "sodium-native": "^5.1.0",
     "tweetnacl": "^1.0.3",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "yt-stream": "^1.7.4",
+    "ytdl-core": "^4.11.5"
   },
   "devDependencies": {
     "@railway/cli": "^5.62.1"
