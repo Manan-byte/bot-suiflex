@@ -756,6 +756,13 @@ ATURAN WAJIB & MUTLAK:
    - Daftar anggota terdaftar:
 ${memberListSnippet}
    - Contoh respons: "Halo <@759727431992737792>! Kamu dipanggil oleh <@authorId> nih 👋"
+6. ATURAN FORMATTING & KERAPIAN JAWABAN (WAJIB RAPI, BERSIH, TERSTRUKTUR):
+   - Format teks WAJIB SANGAT RAPI dan enak dibaca, jangan pernah membuat teks padat berantakan.
+   - Gunakan tanda kutip kode / backtick (\`perintah\`) untuk setiap nama modul, perintah CLI, sintaks kode, nama fungsi, nama file, atau istilah teknis agar terlihat menonjol dan rapi.
+   - Gunakan blok kode (\`\`\`bash ... \`\`\`) dengan penyorotan sintaksis untuk instruksi instalasi atau kodingan multi-baris.
+   - Gunakan bullet points bersih (•) dengan spasi baris kosong antar-paragraf agar tidak menumpuk.
+   - Gunakan teks tebal (**kata kunci**) pada poin-poin penting.
+   - Selalu berikan sapaan ramah pembuka dan kesimpulan singkat di akhir.
 `;
   const models = ["gemini-3.5-flash-lite", "gemini-3.6-flash"];
   for (const model of models) {
@@ -1184,12 +1191,27 @@ function connect() {
                 (e.title && e.title.includes("AI Generated Image")) ||
                 (e.image && e.image.url)
               );
-
               if (imgEmbed) {
                 const match = (imgEmbed.description || "").match(/\*\*Prompt(?:\s+Revisi)?:\*\*\s*\*"([^"]+)"/);
                 referencedImagePrompt = match ? match[1] : (imgEmbed.description || "");
               } else {
-                referencedTextContext = refMsg.content || refMsg.embeds?.[0]?.description || "";
+                // Read text from attachments, embeds, or content
+                if (refMsg.attachments && refMsg.attachments.length > 0) {
+                  const firstAtt = refMsg.attachments[0];
+                  if (firstAtt.url && (firstAtt.filename?.endsWith(".txt") || firstAtt.filename?.endsWith(".md") || firstAtt.filename?.endsWith(".json"))) {
+                    try {
+                      const fileRes = await fetch(firstAtt.url);
+                      if (fileRes.ok) referencedTextContext = (await fileRes.text()).slice(0, 3000);
+                    } catch (_) {}
+                  }
+                }
+                if (!referencedTextContext && refMsg.embeds && refMsg.embeds.length > 0) {
+                  const e = refMsg.embeds[0];
+                  referencedTextContext = [e.title, e.description, ...(e.fields || []).map(f => `${f.name}: ${f.value}`)].filter(Boolean).join("\n");
+                }
+                if (!referencedTextContext) {
+                  referencedTextContext = refMsg.content || "";
+                }
               }
             }
           } catch (_) {}
