@@ -698,10 +698,11 @@ async function queryGeminiAi(userQuestion, authorId, channelId, contextReply = "
 
   // Fast-path: Check if user is asking to tag/mention someone
   const cleanQ = (userQuestion || "").toLowerCase().trim();
-  const isTagRequest = cleanQ.startsWith("tag ") || cleanQ.startsWith("panggil ") || cleanQ.startsWith("mention ") ||
-    cleanQ.includes("tolong tag ") || cleanQ.includes("tolong panggil ") || cleanQ.includes("coba tag ") || cleanQ.includes("bisa tag ");
+  const pureTagTriggers = ["tag ", "panggil ", "mention ", "tolong tag ", "tolong panggil ", "coba tag ", "bisa tag "];
+  const matchedTrigger = pureTagTriggers.find(t => cleanQ.startsWith(t));
+  const isPureTagRequest = matchedTrigger && cleanQ.length < 40 && !cleanQ.includes("?") && !cleanQ.includes("apa") && !cleanQ.includes("kamu ") && !cleanQ.includes("kenapa") && !cleanQ.includes("gimana");
 
-  if (isTagRequest) {
+  if (isPureTagRequest) {
     const target = findMemberToTag(cleanQ);
     if (target) {
       return `Halo <@${target.id}>! Kamu dipanggil oleh <@${authorId}> nih 👋`;
@@ -1305,10 +1306,11 @@ function connect() {
 
           // A. Tag Intent (e.g. "tag enriko", "panggil wahyu", "mention matoa")
           const cleanLower = cleanQuestion.toLowerCase();
-          const isTagRequest = cleanLower.startsWith("tag ") || cleanLower.startsWith("panggil ") || cleanLower.startsWith("mention ") ||
-            cleanLower.includes("tolong tag ") || cleanLower.includes("tolong panggil ") || cleanLower.includes("coba tag ") || cleanLower.includes("bisa tag ");
+          const pureTagTriggers = ["tag ", "panggil ", "mention ", "tolong tag ", "tolong panggil ", "coba tag ", "bisa tag "];
+          const matchedTrigger = pureTagTriggers.find(t => cleanLower.startsWith(t));
+          const isPureTagRequest = matchedTrigger && cleanLower.length < 40 && !cleanLower.includes("?") && !cleanLower.includes("apa") && !cleanLower.includes("kamu ") && !cleanLower.includes("kenapa") && !cleanLower.includes("gimana");
 
-          if (isTagRequest) {
+          if (isPureTagRequest) {
             const target = findMemberToTag(cleanLower);
             if (target) {
               await discordApi(`/channels/${msg.channel_id}/messages`, {
