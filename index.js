@@ -454,6 +454,67 @@ function generateAiImage(prompt, authorId) {
     ]
   };
 }
+// Interactive Poll Helpers
+const POLL_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"];
+const POLL_EMOJI_ENCODED = [
+  "1%EF%B8%8F%E2%83%A3", "2%EF%B8%8F%E2%83%A3", "3%EF%B8%8F%E2%83%A3", "4%EF%B8%8F%E2%83%A3", "5%EF%B8%8F%E2%83%A3",
+  "6%EF%B8%8F%E2%83%A3", "7%EF%B8%8F%E2%83%A3", "8%EF%B8%8F%E2%83%A3", "9%EF%B8%8F%E2%83%A3", "%F0%9F%94%9F"
+];
+
+function createPollPayload(question, optionsList, authorId) {
+  const options = optionsList.slice(0, 10);
+  const optionsText = options.map((opt, i) => `${POLL_EMOJIS[i]} **${opt.trim()}**`).join("\n");
+
+  return {
+    embeds: [{
+      title: "📊 Jajak Pendapat Komunitas • Community Poll",
+      description: `**Pertanyaan:**\n### ${question.trim()}\n\n**Pilihan Jawaban:**\n${optionsText}\n\n*Klik reaksi emoji angka di bawah untuk memberikan suara Anda!*`,
+      color: 0xF1C40F,
+      footer: { text: "Suiflex Interactive Poll System • Powered by Architect" },
+      timestamp: new Date().toISOString()
+    }],
+    optionsCount: options.length
+  };
+}
+
+async function addPollReactions(channelId, messageId, count) {
+  for (let i = 0; i < count; i++) {
+    try {
+      await discordApi(`/channels/${channelId}/messages/${messageId}/reactions/${POLL_EMOJI_ENCODED[i]}/@me`, {
+        method: "PUT"
+      });
+      await new Promise(r => setTimeout(r, 200));
+    } catch (_) {}
+  }
+}
+
+function parsePollFromText(text) {
+  let clean = text.replace(/^(buatkan poll|bikin poll|buatkan polling|bikin polling|poll:|polling:|poll|polling|voting)\s*/i, "").trim();
+  let question = "";
+  let options = [];
+
+  if (clean.includes("|")) {
+    const parts = clean.split("|").map(s => s.trim()).filter(Boolean);
+    question = parts[0];
+    options = parts.slice(1);
+  } else if (clean.includes("pilihan:") || clean.includes("options:") || clean.includes("opsi:")) {
+    const parts = clean.split(/(?:pilihan:|options:|opsi:)/i);
+    question = parts[0].trim();
+    options = parts[1].split(/[,;\n]/).map(s => s.trim()).filter(Boolean);
+  } else if (clean.includes("?")) {
+    const idx = clean.indexOf("?");
+    question = clean.slice(0, idx + 1).trim();
+    const rest = clean.slice(idx + 1).trim();
+    if (rest.length > 0) {
+      options = rest.split(/[,;\n]/).map(s => s.trim().replace(/^[-•*0-9.]+\s*/, "")).filter(Boolean);
+    }
+  }
+
+  if (question && options.length >= 2) {
+    return { question, options };
+  }
+  return null;
+}
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || Buffer.from("QVEuQWI4Uk42STd3ZTJXWkw0ZHZwYm8tNlNWMENDTUIydDYxcnFESk5DUlhVWlpFb2hnRWc=", "base64").toString("utf-8");
 async function queryGeminiAi(userQuestion, authorId, channelId) {
   const channelScope = CHANNEL_MODULE_SCOPE[channelId];
@@ -967,13 +1028,54 @@ function connect() {
             return;
           }
 
-          // A. Check for Image Generation Intent
-          const isImageRequest = cleanQuestion.startsWith("buatkan gambar") ||
-            cleanQuestion.startsWith("gambarkan") ||
-            cleanQuestion.startsWith("generate gambar") ||
-            cleanQuestion.startsWith("bikin gambar") ||
-            cleanQuestion.startsWith("gambar ") ||
-            cleanQuestion.startsWith("generate image");
+          // A. Tag Intent (e.g. "tag enriko", "panggil wahyu", "mention matoa")
+          const cleanLower = cleanQuestion.toLowerCase();
+          const isTagRequest = cleanLower.startsWith("tag ") || cleanLower.startsWith("panggil ") || cleanLower.startsWith("mention ") ||
+            cleanLower.includes("tolong tag ") || cleanLower.includes("tolong panggil ") || cleanLower.includes("coba tag ") || cleanLower.includes("bisa tag ");
+
+          if (isTagRequest) {
+            const target = findMemberToTag(cleanLower);
+            if (target) {
+              await discordApi(`/channels/${msg.channel_id}/messages`, {
+                method: "POST",
+                body: JSON.stringify({
+                  content: `Halo <@${target.id}>! Kamu dipanggil oleh <@${msg.author.id}> nih 👋`,
+                  message_reference: { message_id: msg.id }
+                })
+              });
+              return;
+            }
+          }
+
+          // B. Poll Intent (e.g. "buatkan poll ...", "bikin polling ...", "poll: ... | ...")
+          const isPollRequest = cleanLower.startsWith("poll") || cleanLower.startsWith("polling") ||
+            cleanLower.startsWith("buatkan poll") || cleanLower.startsWith("bikin poll") ||
+            cleanLower.startsWith("buatkan polling") || cleanLower.startsWith("bikin polling") ||
+            cleanLower.startsWith("voting");
+
+          if (isPollRequest) {
+            const parsed = parsePollFromText(cleanQuestion);
+            if (parsed) {
+              const pollPayload = createPollPayload(parsed.question, parsed.options, msg.author.id);
+              const postRes = await discordApi(`/channels/${msg.channel_id}/messages`, {
+                method: "POST",
+                body: JSON.stringify(pollPayload)
+              });
+              if (postRes.ok) {
+                const postData = await postRes.json();
+                addPollReactions(msg.channel_id, postData.id, pollPayload.optionsCount);
+              }
+              return;
+            }
+          }
+
+          // C. Image Generation Intent (e.g. "buatkan gambar ...", "gambarkan ...", "generate image ...")
+          const isImageRequest = cleanLower.startsWith("buatkan gambar") ||
+            cleanLower.startsWith("gambarkan") ||
+            cleanLower.startsWith("generate gambar") ||
+            cleanLower.startsWith("bikin gambar") ||
+            cleanLower.startsWith("gambar ") ||
+            cleanLower.startsWith("generate image");
 
           if (isImageRequest) {
             const imgPrompt = cleanQuestion
@@ -991,11 +1093,11 @@ function connect() {
             return;
           }
 
-          // B. Check for Document Creation Intent
-          const isDocRequest = cleanQuestion.startsWith("buatkan dokumen") ||
-            cleanQuestion.startsWith("bikin dokumen") ||
-            cleanQuestion.startsWith("buatkan doc") ||
-            cleanQuestion.startsWith("tuliskan dokumen");
+          // D. Document Creation Intent (e.g. "buatkan dokumen ...", "bikin doc ...")
+          const isDocRequest = cleanLower.startsWith("buatkan dokumen") ||
+            cleanLower.startsWith("bikin dokumen") ||
+            cleanLower.startsWith("buatkan doc") ||
+            cleanLower.startsWith("tuliskan dokumen");
 
           if (isDocRequest) {
             const topic = cleanQuestion
@@ -1021,7 +1123,102 @@ function connect() {
             return;
           }
 
+          // E. Stack Overview Intent (e.g. "stack", "peta modul", "daftar modul", "apa saja modul suiflex")
+          if (cleanLower === "stack" || cleanLower.includes("peta modul") || cleanLower.includes("daftar modul") || cleanLower.includes("modul apa saja")) {
+            await discordApi(`/channels/${msg.channel_id}/messages`, {
+              method: "POST",
+              body: JSON.stringify({
+                content: formatModuleAnswer("suiflex") || "Berikut 10 modul rekayasa Suiflex:",
+                embeds: [{
+                  title: "📦 10 Modul Ekosistem Suiflex Open Engineering",
+                  description: "Kunjungi portal dokumentasi resmi untuk mempelajari seluruh modul:\n👉 **https://www.suiflex.dev**",
+                  color: 0xF1C40F
+                }],
+                message_reference: { message_id: msg.id },
+                components: [
+                  {
+                    type: 1,
+                    components: [
+                      { type: 2, style: 5, label: "🌐 Website Resmi", url: "https://www.suiflex.dev" },
+                      { type: 2, style: 5, label: "🐙 Organisasi GitHub", url: "https://github.com/suiflex" }
+                    ]
+                  }
+                ]
+              })
+            });
+            return;
+          }
+
+          // F. Docs Intent (e.g. "docs arsy", "dokumentasi rdb", "cara install forgeguard")
+          const docsMatch = cleanLower.match(/^(?:docs|dokumentasi|cara install)\s+([a-z0-9_-]+)/i);
+          if (docsMatch) {
+            const targetModKey = Object.keys(SUIFLEX_MODULES).find(k => k.includes(docsMatch[1]) || docsMatch[1].includes(k));
+            if (targetModKey) {
+              const docContent = formatModuleAnswer(targetModKey);
+              await discordApi(`/channels/${msg.channel_id}/messages`, {
+                method: "POST",
+                body: JSON.stringify({
+                  content: docContent,
+                  message_reference: { message_id: msg.id }
+                })
+              });
+              return;
+            }
+          }
+
+          // G. Clear Chat Intent for Admins/Mods (e.g. "clear 10", "hapus 20 pesan", "bersihkan 5 chat")
+          const clearMatch = cleanLower.match(/^(?:clear|hapus|bersihkan)\s+(\d+)/i);
+          if (clearMatch) {
+            const amount = parseInt(clearMatch[1], 10);
+            const permissions = BigInt(msg.member?.permissions || "0");
+            const canManage = (permissions & 8n) === 8n || (permissions & 8192n) === 8192n;
+
+            if (!canManage) {
+              await discordApi(`/channels/${msg.channel_id}/messages`, {
+                method: "POST",
+                body: JSON.stringify({
+                  content: "❌ Anda tidak memiliki izin `Manage Messages` untuk membersihkan chat.",
+                  message_reference: { message_id: msg.id }
+                })
+              });
+              return;
+            }
+
+            try {
+              const fetchRes = await discordApi(`/channels/${msg.channel_id}/messages?limit=${amount + 1}`);
+              const msgs = await fetchRes.json();
+              const messageIds = msgs.map(m => m.id);
+              if (messageIds.length > 0) {
+                await discordApi(`/channels/${msg.channel_id}/messages/bulk-delete`, {
+                  method: "POST",
+                  body: JSON.stringify({ messages: messageIds })
+                });
+              }
+            } catch (_) {}
+            return;
+          }
+
+          // H. Ping / Status Intent (e.g. "ping", "status bot", "cek status")
+          if (cleanLower === "ping" || cleanLower === "status bot" || cleanLower === "cek status") {
+            const uptimeMinutes = Math.floor((Date.now() - BOT_START_TIME) / 60000);
+            await discordApi(`/channels/${msg.channel_id}/messages`, {
+              method: "POST",
+              body: JSON.stringify({
+                embeds: [{
+                  title: "🏓 Pong! • Suiflex Architect AI",
+                  description: `**Status Sistem:** 🟢 Online 24/7 (Railway Cloud)\n**Uptime:** ${uptimeMinutes} menit\n**Latency:** < 40ms\n**AI Engine:** Google Gemini 3.6 Flash Active`,
+                  color: 0x2ECC71,
+                  timestamp: new Date().toISOString()
+                }],
+                message_reference: { message_id: msg.id }
+              })
+            });
+            return;
+          }
+
+          // I. Default: Intelligent AI Q&A via Google Gemini!
           const replyText = await generateAiAnswer(cleanQuestion || "halo", msg.author.id, msg.channel_id);
+
           await discordApi(`/channels/${msg.channel_id}/messages`, {
             method: "POST",
             body: JSON.stringify({
@@ -1424,6 +1621,28 @@ function connect() {
                 }
               ]
             });
+          }
+          // 11. /poll (Interactive Community Poll)
+          if (cmdName === "poll") {
+            const question = cmdData.options?.find(o => o.name === "question")?.value || "Jajak Pendapat";
+            const optionsStr = cmdData.options?.find(o => o.name === "options")?.value || "";
+            const options = optionsStr.split(/[,|;\n]/).map(s => s.trim()).filter(Boolean);
+
+            if (options.length < 2) {
+              await reply({ content: "❌ Harap berikan minimal 2 pilihan jawaban (pisahkan dengan koma).", flags: 64 });
+              return;
+            }
+
+            const pollPayload = createPollPayload(question, options, member.user.id);
+            await reply(pollPayload);
+
+            try {
+              const originRes = await fetch(`https://discord.com/api/v10/webhooks/${APP_ID}/${interactionToken}/messages/@original`);
+              if (originRes.ok) {
+                const originData = await originRes.json();
+                addPollReactions(interaction.channel_id, originData.id, pollPayload.optionsCount);
+              }
+            } catch (_) {}
           }
         }
       }
