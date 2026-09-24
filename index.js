@@ -193,29 +193,18 @@ async function sendTyping(channelId) {
     await discordApi(`/channels/${channelId}/typing`, { method: "POST" });
   } catch (_) {}
 }
-// Smart message sender that handles messages > 2000 chars (embed or chunking)
-async function sendSmartMessage(channelId, text, replyMsgId = null, components = null) {
+// Smart message sender that formats ALL AI responses as beautiful Discord Embed cards (matching user screenshot)
+async function sendSmartMessage(channelId, text, replyMsgId = null, components = null, color = 0x3498DB) {
   if (!text || !text.trim()) return;
 
-  if (text.length <= 2000) {
-    return await discordApi(`/channels/${channelId}/messages`, {
-      method: "POST",
-      body: JSON.stringify({
-        content: text,
-        message_reference: replyMsgId ? { message_id: replyMsgId } : undefined,
-        components: components || undefined
-      })
-    });
-  }
-
-  // If text <= 4096, send as rich embed description
+  // Single clean embed card (up to 4096 chars - covers 99.9% of responses)
   if (text.length <= 4096) {
     return await discordApi(`/channels/${channelId}/messages`, {
       method: "POST",
       body: JSON.stringify({
         embeds: [{
           description: text,
-          color: 0x3498DB
+          color: color
         }],
         message_reference: replyMsgId ? { message_id: replyMsgId } : undefined,
         components: components || undefined
@@ -223,28 +212,34 @@ async function sendSmartMessage(channelId, text, replyMsgId = null, components =
     });
   }
 
-  // If > 4096, chunk into 1950-char messages
+  // If text > 4096, split into multiple clean embed cards (up to 4000 chars each)
   let remaining = text;
   let first = true;
   while (remaining.length > 0) {
-    if (remaining.length <= 1950) {
+    if (remaining.length <= 4000) {
       await discordApi(`/channels/${channelId}/messages`, {
         method: "POST",
         body: JSON.stringify({
-          content: remaining,
+          embeds: [{
+            description: remaining,
+            color: color
+          }],
           message_reference: (first && replyMsgId) ? { message_id: replyMsgId } : undefined,
-          components: components || undefined
+          components: (first && components) ? components : undefined
         })
       });
       break;
     }
-    let splitIdx = remaining.lastIndexOf("\n", 1950);
-    if (splitIdx === -1) splitIdx = 1950;
+    let splitIdx = remaining.lastIndexOf("\n", 4000);
+    if (splitIdx === -1) splitIdx = 4000;
     const chunk = remaining.slice(0, splitIdx);
     await discordApi(`/channels/${channelId}/messages`, {
       method: "POST",
       body: JSON.stringify({
-        content: chunk,
+        embeds: [{
+          description: chunk,
+          color: color
+        }],
         message_reference: (first && replyMsgId) ? { message_id: replyMsgId } : undefined
       })
     });
@@ -1250,13 +1245,7 @@ function connect() {
               });
             } else {
               // Conversational answer to user's question about the image
-              await discordApi(`/channels/${msg.channel_id}/messages`, {
-                method: "POST",
-                body: JSON.stringify({
-                  content: decision,
-                  message_reference: { message_id: msg.id }
-                })
-              });
+              await sendSmartMessage(msg.channel_id, decision, msg.id);
             }
             return;
           }
