@@ -911,13 +911,38 @@ function connect() {
         if (msg.author.bot) return;
 
         // 2. Check if bot is mentioned (User Mention OR Role Mention)
+        // 2. Check if bot is mentioned or if this message is a reply to the bot
+        let isReplyToBot = false;
+        let referencedImagePrompt = null;
+
+        if (msg.message_reference && msg.message_reference.message_id) {
+          try {
+            const refRes = await discordApi(`/channels/${msg.channel_id}/messages/${msg.message_reference.message_id}`);
+            if (refRes.ok) {
+              const refMsg = await refRes.json();
+              if (refMsg.author?.id === "1552302920912080927") {
+                isReplyToBot = true;
+                // Check if referenced message contains an AI generated image
+                const imgEmbed = refMsg.embeds?.find(e =>
+                  (e.title && e.title.includes("AI Generated Image")) ||
+                  (e.image && e.image.url)
+                );
+                if (imgEmbed) {
+                  const match = (imgEmbed.description || "").match(/\*\*Prompt:\*\*\s*\*"([^"]+)"/);
+                  referencedImagePrompt = match ? match[1] : (imgEmbed.description || "");
+                }
+              }
+            }
+          } catch (_) {}
+        }
+
         const isUserMentioned = (msg.mentions || []).some(u => u.id === "1552302920912080927") ||
           (msg.content && (msg.content.includes("<@1552302920912080927>") || msg.content.includes("<@!1552302920912080927>")));
 
         const isRoleMentioned = (msg.mention_roles || []).includes("1552307486613311610") ||
           (msg.content && msg.content.includes("<@&1552307486613311610>"));
 
-        const isBotMentioned = isUserMentioned || isRoleMentioned;
+        const isBotMentioned = isUserMentioned || isRoleMentioned || isReplyToBot;
 
         if (isBotMentioned) {
           await sendTyping(msg.channel_id);
@@ -927,6 +952,21 @@ function connect() {
             .replace(/<@!?1552302920912080927>/g, "")
             .replace(/<@&1552307486613311610>/g, "")
             .trim();
+
+          // 0. If replying to an image, treat it as an image modification / revision!
+          if (referencedImagePrompt) {
+            const combinedPrompt = `${referencedImagePrompt}, ${cleanQuestion}`;
+            const imgPayload = generateAiImage(combinedPrompt, msg.author.id);
+            await discordApi(`/channels/${msg.channel_id}/messages`, {
+              method: "POST",
+              body: JSON.stringify({
+                ...imgPayload,
+                message_reference: { message_id: msg.id }
+              })
+            });
+            return;
+          }
+
           // A. Check for Image Generation Intent
           const isImageRequest = cleanQuestion.startsWith("buatkan gambar") ||
             cleanQuestion.startsWith("gambarkan") ||
