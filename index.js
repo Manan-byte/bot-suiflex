@@ -193,6 +193,65 @@ async function sendTyping(channelId) {
     await discordApi(`/channels/${channelId}/typing`, { method: "POST" });
   } catch (_) {}
 }
+// Smart message sender that handles messages > 2000 chars (embed or chunking)
+async function sendSmartMessage(channelId, text, replyMsgId = null, components = null) {
+  if (!text || !text.trim()) return;
+
+  if (text.length <= 2000) {
+    return await discordApi(`/channels/${channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        content: text,
+        message_reference: replyMsgId ? { message_id: replyMsgId } : undefined,
+        components: components || undefined
+      })
+    });
+  }
+
+  // If text <= 4096, send as rich embed description
+  if (text.length <= 4096) {
+    return await discordApi(`/channels/${channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        embeds: [{
+          description: text,
+          color: 0x3498DB
+        }],
+        message_reference: replyMsgId ? { message_id: replyMsgId } : undefined,
+        components: components || undefined
+      })
+    });
+  }
+
+  // If > 4096, chunk into 1950-char messages
+  let remaining = text;
+  let first = true;
+  while (remaining.length > 0) {
+    if (remaining.length <= 1950) {
+      await discordApi(`/channels/${channelId}/messages`, {
+        method: "POST",
+        body: JSON.stringify({
+          content: remaining,
+          message_reference: (first && replyMsgId) ? { message_id: replyMsgId } : undefined,
+          components: components || undefined
+        })
+      });
+      break;
+    }
+    let splitIdx = remaining.lastIndexOf("\n", 1950);
+    if (splitIdx === -1) splitIdx = 1950;
+    const chunk = remaining.slice(0, splitIdx);
+    await discordApi(`/channels/${channelId}/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        content: chunk,
+        message_reference: (first && replyMsgId) ? { message_id: replyMsgId } : undefined
+      })
+    });
+    first = false;
+    remaining = remaining.slice(splitIdx).trim();
+  }
+}
 
 // ==========================================
 // 🐙 1. LIVE GITHUB SYNC ENGINE
@@ -1361,13 +1420,7 @@ function connect() {
           // I. Default: Intelligent AI Q&A via Google Gemini!
           const replyText = await generateAiAnswer(cleanQuestion || "halo", msg.author.id, msg.channel_id, referencedTextContext);
 
-          await discordApi(`/channels/${msg.channel_id}/messages`, {
-            method: "POST",
-            body: JSON.stringify({
-              content: replyText,
-              message_reference: { message_id: msg.id }
-            })
-          });
+          await sendSmartMessage(msg.channel_id, replyText, msg.id);
         }
       }
 
