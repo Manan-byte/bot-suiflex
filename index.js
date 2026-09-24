@@ -560,6 +560,43 @@ function extractImagePrompt(text) {
   }
   return null;
 }
+async function handleImageReplySmart(originalPrompt, userReply) {
+  const prompt = `
+Kamu adalah asisten cerdas untuk bot Discord Architect di Suiflex.
+Pengguna sedang me-reply pesan gambar yang sebelumnya di-generate dengan prompt: "${originalPrompt}".
+Isi pesan reply pengguna: "${userReply}".
+
+Tentukan niat pengguna:
+A. Jika pengguna BERTANYA atau MENGOMENTARI gambar (misal: "apakah ini anjing?", "ini apa?", "bagus banget", "model apa ini?", "ini anjing bukan?", "apakah ini anjing cek lagi"):
+   Jawablah secara santun, ramah, dan informatif sebagai teks biasa (1-2 paragraf pendek). Jelaskan objek apa yang sebenarnya ada di gambar sesuai prompt sebelumnya.
+B. Jika pengguna MEMINTA REVISI/MODIFIKASI/GENERATE GAMBAR BARU (misal: "ganti jadi anjing", "tambah sayap", "buatkan versi malam", "bikin anjingnya", "ubah warna", "rubah gambar ini jadi anjing"):
+   Tuliskan HANYA baris perintah dengan format:
+   GENERATE_IMAGE: <prompt bahasa inggris yang sudah disintesis bersih dan siap digenerate>
+
+Jawab sekarang:
+`.trim();
+
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }]
+      })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (text && text.trim()) return text.trim();
+    }
+  } catch (_) {}
+
+  const isModifying = userReply.toLowerCase().match(/(?:ganti|ubah|rubah|tambah|make|change|turn into|add|versi)/i);
+  if (isModifying) {
+    return `GENERATE_IMAGE: ${userReply}`;
+  }
+  return `Halo! Gambar di atas adalah hasil generate AI dengan deskripsi awal: "${originalPrompt}". Jika ingin membuat gambar baru atau mengubahnya, silakan sebutkan instruksi perubahannya ya!`;
+}
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || Buffer.from("QVEuQWI4Uk42STd3ZTJXWkw0ZHZwYm8tNlNWMENDTUIydDYxcnFESk5DUlhVWlpFb2hnRWc=", "base64").toString("utf-8");
 async function queryGeminiAi(userQuestion, authorId, channelId, contextReply = "") {
   const channelScope = CHANNEL_MODULE_SCOPE[channelId];
@@ -1117,16 +1154,29 @@ function connect() {
             .trim();
 
           // 0. If replying to an image, treat it as an image modification / revision!
+          // 0. If replying to an image, intelligently analyze whether it's a question or a revision!
           if (referencedImagePrompt) {
-            const combinedPrompt = `${referencedImagePrompt}, ${cleanQuestion}`;
-            const imgPayload = generateAiImage(combinedPrompt, msg.author.id);
-            await discordApi(`/channels/${msg.channel_id}/messages`, {
-              method: "POST",
-              body: JSON.stringify({
-                ...imgPayload,
-                message_reference: { message_id: msg.id }
-              })
-            });
+            const decision = await handleImageReplySmart(referencedImagePrompt, cleanQuestion);
+            if (decision.startsWith("GENERATE_IMAGE:")) {
+              const newPrompt = decision.replace(/^GENERATE_IMAGE:\s*/i, "").trim();
+              const imgPayload = generateAiImage(newPrompt, msg.author.id);
+              await discordApi(`/channels/${msg.channel_id}/messages`, {
+                method: "POST",
+                body: JSON.stringify({
+                  ...imgPayload,
+                  message_reference: { message_id: msg.id }
+                })
+              });
+            } else {
+              // Conversational answer to user's question about the image
+              await discordApi(`/channels/${msg.channel_id}/messages`, {
+                method: "POST",
+                body: JSON.stringify({
+                  content: decision,
+                  message_reference: { message_id: msg.id }
+                })
+              });
+            }
             return;
           }
 
