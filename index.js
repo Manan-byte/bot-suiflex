@@ -489,29 +489,74 @@ async function addPollReactions(channelId, messageId, count) {
 }
 
 function parsePollFromText(text) {
-  let clean = text.replace(/^(buatkan poll|bikin poll|buatkan polling|bikin polling|poll:|polling:|poll|polling|voting)\s*/i, "").trim();
+  const q = text.trim();
+  const lower = q.toLowerCase();
+
+  const isPoll = lower.includes("poll") || lower.includes("polling") || lower.includes("voting") || lower.includes("vote") || lower.includes("jajak pendapat");
+  if (!isPoll) return null;
+
+  // Strip poll trigger words
+  let clean = q.replace(/^(?:tolong\s+|coba\s+|bisa\s+)?(?:buatkan\s+|buat\s+kan\s+|bikin\s+|buat\s+)?(?:polling|poll|voting|vote|jajak pendapat)\s*:?\s*/i, "").trim();
+
   let question = "";
   let options = [];
 
+  // Case A: Pipe separated "Pertanyaan? | Opsi 1 | Opsi 2"
   if (clean.includes("|")) {
     const parts = clean.split("|").map(s => s.trim()).filter(Boolean);
     question = parts[0];
     options = parts.slice(1);
-  } else if (clean.includes("pilihan:") || clean.includes("options:") || clean.includes("opsi:")) {
-    const parts = clean.split(/(?:pilihan:|options:|opsi:)/i);
+  }
+  // Case B: Explicit options keyword "pilihan: A, B"
+  else if (clean.match(/(?:pilihan|options|opsi)\s*:/i)) {
+    const parts = clean.split(/(?:pilihan|options|opsi)\s*:/i);
     question = parts[0].trim();
     options = parts[1].split(/[,;\n]/).map(s => s.trim()).filter(Boolean);
-  } else if (clean.includes("?")) {
+  }
+  // Case C: Question mark "Siapa terbaik? A, B"
+  else if (clean.includes("?")) {
     const idx = clean.indexOf("?");
     question = clean.slice(0, idx + 1).trim();
     const rest = clean.slice(idx + 1).trim();
-    if (rest.length > 0) {
+    if (rest.includes(" atau ")) {
+      options = rest.split(/\s+atau\s+/i).map(s => s.trim()).filter(Boolean);
+    } else {
       options = rest.split(/[,;\n]/).map(s => s.trim().replace(/^[-•*0-9.]+\s*/, "")).filter(Boolean);
     }
   }
+  // Case D: Separated by " atau " (e.g. "warna hitam atau putih")
+  else if (clean.toLowerCase().includes(" atau ")) {
+    options = clean.split(/\s+atau\s+/i).map(s => s.trim()).filter(Boolean);
+    question = `Pilih: ${options.join(" atau ")}?`;
+  }
+  // Case E: Separated by " vs "
+  else if (clean.toLowerCase().includes(" vs ")) {
+    options = clean.split(/\s+vs\s+/i).map(s => s.trim()).filter(Boolean);
+    question = `Voting: ${options.join(" vs ")}?`;
+  }
+
+  // Capitalize options
+  options = options.map(o => o.charAt(0).toUpperCase() + o.slice(1));
 
   if (question && options.length >= 2) {
     return { question, options };
+  }
+  return null;
+}
+
+function extractImagePrompt(text) {
+  const q = text.toLowerCase().trim();
+  const imageTriggers = [
+    "buatkan gambar", "buat kan gambar", "bikin gambar", "bikin kan gambar",
+    "gambarkan", "generate gambar", "buat gambar", "generate image",
+    "gambar ", "lukiskan", "foto "
+  ];
+
+  const matched = imageTriggers.find(t => q.includes(t));
+  if (matched) {
+    const regex = new RegExp(`(?:tolong\\s+|coba\\s+|bisa\\s+)?(?:${imageTriggers.join("|")})\\s*:?\\s*`, "i");
+    const prompt = text.replace(regex, "").trim();
+    return prompt || "futuristic digital art";
   }
   return null;
 }
@@ -1069,20 +1114,11 @@ function connect() {
             }
           }
 
-          // C. Image Generation Intent (e.g. "buatkan gambar ...", "gambarkan ...", "generate image ...")
-          const isImageRequest = cleanLower.startsWith("buatkan gambar") ||
-            cleanLower.startsWith("gambarkan") ||
-            cleanLower.startsWith("generate gambar") ||
-            cleanLower.startsWith("bikin gambar") ||
-            cleanLower.startsWith("gambar ") ||
-            cleanLower.startsWith("generate image");
+          // C. Image Generation Intent (e.g. "buat kan gambar ...", "gambarkan ...", "generate image ...")
+          const imagePromptExtracted = extractImagePrompt(cleanQuestion);
 
-          if (isImageRequest) {
-            const imgPrompt = cleanQuestion
-              .replace(/^(buatkan gambar|gambarkan|generate gambar|bikin gambar|gambar|generate image)\s*/i, "")
-              .trim();
-
-            const imgPayload = generateAiImage(imgPrompt || "futuristic technology landscape", msg.author.id);
+          if (imagePromptExtracted) {
+            const imgPayload = generateAiImage(imagePromptExtracted, msg.author.id);
             await discordApi(`/channels/${msg.channel_id}/messages`, {
               method: "POST",
               body: JSON.stringify({
