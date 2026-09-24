@@ -473,18 +473,56 @@ function formatModuleAnswer(modKey) {
     `🌐 Dokumentasi Resmi: [https://www.suiflex.dev](https://www.suiflex.dev) • [GitHub](${mod.url})`
   ].join("\n");
 }
-function generateAiImage(prompt, authorId) {
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || Buffer.from("QVEuQWI4Uk42STd3ZTJXWkw0ZHZwYm8tNlNWMENDTUIydDYxcnFESk5DUlhVWlpFb2hnRWc=", "base64").toString("utf-8");
+
+async function generateAiImage(rawPrompt, authorId) {
+  let finalPrompt = rawPrompt.trim();
+  let aiUnderstoodNote = "";
+
+  try {
+    const expandPromptInstruction = `You are an expert AI prompt architect for top-tier image generators (Flux.1, Midjourney v6, SDXL).
+Your task is to DEEPLY UNDERSTAND the user's intent from the given prompt (especially when in Indonesian, slang, or brief words) and synthesize it into a vivid, descriptive, photorealistic or artistic English prompt.
+CRITICAL UNDERSTANDING RULES:
+1. Understand the core concept accurately:
+   - "kuda terbang" -> A magnificent mythical winged pegasus horse soaring through celestial clouds with magnificent feathered wings.
+   - "kucing renang" -> A cute domestic cat swimming in crystal-clear blue water in a pool.
+   - "mobil terbang" -> A futuristic sci-fi flying hovercar with glowing engines soaring above a neon cyberpunk city.
+   - "robot koding" -> A humanoid AI robot working on multiple holographic transparent code screens in a futuristic lab.
+2. Enrich with vivid artistic details: subject details, atmosphere, lighting (cinematic, volumetric rays, golden hour), environment, perspective, textures, photorealistic, 8k resolution.
+3. Output ONLY the finalized English prompt string, without any preamble, quotes, markdown, or explanation.`;
+
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${GEMINI_API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: expandPromptInstruction }] },
+        contents: [{ parts: [{ text: rawPrompt }] }]
+      })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const synthesized = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      if (synthesized && synthesized.length > 10) {
+        finalPrompt = synthesized.replace(/^["']|["']$/g, "").trim();
+        aiUnderstoodNote = `\n**✨ Pemahaman AI:** *"${finalPrompt.slice(0, 160)}${finalPrompt.length > 160 ? "..." : ""}"*`;
+      }
+    }
+  } catch (err) {
+    console.error(`[AI Image Prompt Synthesis Error]:`, err.message);
+  }
+
   const seed = Math.floor(Math.random() * 1000000);
-  const encodedPrompt = encodeURIComponent(prompt.trim());
+  const encodedPrompt = encodeURIComponent(finalPrompt);
   const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&seed=${seed}&nologo=true`;
 
   return {
     embeds: [{
       title: "🎨 AI Generated Image • Architect Vision",
-      description: `**Prompt:** *"${prompt.trim()}"*\n**Dimensi:** 1024x1024 HD • **Model:** Flux AI`,
+      description: `**Prompt:** *"${rawPrompt.trim()}"*${aiUnderstoodNote}\n**Dimensi:** 1024x1024 HD • **Model:** Flux AI (Understood & Enhanced)`,
       image: { url: imageUrl },
       color: 0x9B59B6,
-      footer: { text: "Dibuat oleh Suiflex Architect AI" },
+      footer: { text: "Dibuat oleh Suiflex Architect AI • Deep Understanding" },
       timestamp: new Date().toISOString()
     }],
     components: [
@@ -651,7 +689,6 @@ Jawab sekarang:
   }
   return `Halo! Gambar di atas adalah hasil generate AI dengan deskripsi awal: "${originalPrompt}". Jika ingin membuat gambar baru atau mengubahnya, silakan sebutkan instruksi perubahannya ya!`;
 }
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || Buffer.from("QVEuQWI4Uk42STd3ZTJXWkw0ZHZwYm8tNlNWMENDTUIydDYxcnFESk5DUlhVWlpFb2hnRWc=", "base64").toString("utf-8");
 async function queryGeminiAi(userQuestion, authorId, channelId, contextReply = "") {
   const channelScope = CHANNEL_MODULE_SCOPE[channelId];
   let channelContextDesc = "Channel umum (#💬-suiflex-general). Anda bebas menjawab seputar seluruh ekosistem Suiflex 10 modul.";
@@ -758,6 +795,11 @@ ${memberListSnippet}
    - Gunakan bullet points bersih (•) dengan spasi baris kosong antar-paragraf agar tidak menumpuk.
    - Gunakan teks tebal (**kata kunci**) pada poin-poin penting.
    - Selalu berikan sapaan ramah pembuka dan kesimpulan singkat di akhir.
+7. ATURAN PEMAHAMAN INTENSI PENGGUNA (PAHAMI DULU SEBELUM EKSEKUSI):
+   - Sebelum menjawab atau mengeksekusi perintah pengguna di semua channel dan fitur:
+   - PAHAMI DULU maksud, konteks, dan tujuan tersirat dari apa yang diminta pengguna.
+   - JANGAN mengeksekusi secara buta atau harfiah jika maksud pengguna memerlukan interpretasi cerdas (contoh: 'kuda terbang' = pegasus bersayap, 'kucing renang' = kucing di kolam renang, revisi dokumen = langsung perbaiki dokumen yang dimaksud).
+   - Pastikan jawaban selalu akurat, tepat sasaran, dan mengeksekusi apa yang benar-benar diinginkan pengguna secara mendalam dan tuntas.
 `;
   const models = ["gemini-3.5-flash-lite", "gemini-3.6-flash"];
   for (const model of models) {
@@ -1235,7 +1277,7 @@ function connect() {
             const decision = await handleImageReplySmart(referencedImagePrompt, cleanQuestion);
             if (decision.startsWith("GENERATE_IMAGE:")) {
               const newPrompt = decision.replace(/^GENERATE_IMAGE:\s*/i, "").trim();
-              const imgPayload = generateAiImage(newPrompt, msg.author.id);
+              const imgPayload = await generateAiImage(newPrompt, msg.author.id);
               await discordApi(`/channels/${msg.channel_id}/messages`, {
                 method: "POST",
                 body: JSON.stringify({
@@ -1295,7 +1337,7 @@ function connect() {
           const imagePromptExtracted = extractImagePrompt(cleanQuestion);
 
           if (imagePromptExtracted) {
-            const imgPayload = generateAiImage(imagePromptExtracted, msg.author.id);
+            const imgPayload = await generateAiImage(imagePromptExtracted, msg.author.id);
             await discordApi(`/channels/${msg.channel_id}/messages`, {
               method: "POST",
               body: JSON.stringify({
@@ -1795,7 +1837,7 @@ function connect() {
           // 9. /image (AI Image Generator)
           if (cmdName === "image") {
             const prompt = cmdData.options?.[0]?.value || "futuristic technology landscape";
-            const imagePayload = generateAiImage(prompt, member.user.id);
+            const imagePayload = await generateAiImage(prompt, member.user.id);
             await reply(imagePayload);
           }
 
