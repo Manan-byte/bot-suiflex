@@ -561,7 +561,7 @@ function extractImagePrompt(text) {
   return null;
 }
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || Buffer.from("QVEuQWI4Uk42STd3ZTJXWkw0ZHZwYm8tNlNWMENDTUIydDYxcnFESk5DUlhVWlpFb2hnRWc=", "base64").toString("utf-8");
-async function queryGeminiAi(userQuestion, authorId, channelId) {
+async function queryGeminiAi(userQuestion, authorId, channelId, contextReply = "") {
   const channelScope = CHANNEL_MODULE_SCOPE[channelId];
   let channelContextDesc = "Channel umum (#💬-suiflex-general). Anda bebas menjawab seputar seluruh ekosistem Suiflex 10 modul.";
   if (channelScope) {
@@ -619,14 +619,18 @@ ${memberListSnippet}
   const models = ["gemini-3.5-flash-lite", "gemini-3.6-flash"];
   for (const model of models) {
     try {
-      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents: [{ parts: [{ text: `[Konteks Channel: ${channelContextDesc}]\nPengguna (<@${authorId}>) bertanya: "${userQuestion}"` }] }]
-        })
-      });
+        const promptContent = contextReply && contextReply.trim()
+          ? `[Konteks Channel: ${channelContextDesc}]\n[Pesan Sebelumnya yang Di-Reply Pengguna]:\n"${contextReply.slice(0, 600)}"\n\nPengguna (<@${authorId}>) merespons: "${userQuestion}"`
+          : `[Konteks Channel: ${channelContextDesc}]\nPengguna (<@${authorId}>) bertanya: "${userQuestion}"`;
+
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ parts: [{ text: promptContent }] }]
+          })
+        });
 
       if (res.ok) {
         const data = await res.json();
@@ -646,8 +650,8 @@ ${memberListSnippet}
   return fallbackAiAnswer(userQuestion, authorId, channelId);
 }
 
-async function generateAiAnswer(userQuestion, authorId, channelId) {
-  return await queryGeminiAi(userQuestion, authorId, channelId);
+async function generateAiAnswer(userQuestion, authorId, channelId, contextReply = "") {
+  return await queryGeminiAi(userQuestion, authorId, channelId, contextReply);
 }
 
 function fallbackAiAnswer(userQuestion, authorId, channelId) {
@@ -1017,26 +1021,34 @@ function connect() {
         if (msg.author.bot) return;
 
         // 2. Check if bot is mentioned (User Mention OR Role Mention)
-        // 2. Check if bot is mentioned or if this message is a reply to the bot
         let isReplyToBot = false;
         let referencedImagePrompt = null;
+        let referencedTextContext = "";
 
         if (msg.message_reference && msg.message_reference.message_id) {
           try {
-            const refRes = await discordApi(`/channels/${msg.channel_id}/messages/${msg.message_reference.message_id}`);
-            if (refRes.ok) {
-              const refMsg = await refRes.json();
+            let refMsg = msg.referenced_message;
+            if (!refMsg) {
+              const refRes = await discordApi(`/channels/${msg.channel_id}/messages/${msg.message_reference.message_id}`);
+              if (refRes.ok) refMsg = await refRes.json();
+            }
+
+            if (refMsg) {
               if (refMsg.author?.id === "1552302920912080927") {
                 isReplyToBot = true;
-                // Check if referenced message contains an AI generated image
-                const imgEmbed = refMsg.embeds?.find(e =>
-                  (e.title && e.title.includes("AI Generated Image")) ||
-                  (e.image && e.image.url)
-                );
-                if (imgEmbed) {
-                  const match = (imgEmbed.description || "").match(/\*\*Prompt:\*\*\s*\*"([^"]+)"/);
-                  referencedImagePrompt = match ? match[1] : (imgEmbed.description || "");
-                }
+              }
+
+              // Check if referenced message contains an AI generated image
+              const imgEmbed = refMsg.embeds?.find(e =>
+                (e.title && e.title.includes("AI Generated Image")) ||
+                (e.image && e.image.url)
+              );
+
+              if (imgEmbed) {
+                const match = (imgEmbed.description || "").match(/\*\*Prompt(?:\s+Revisi)?:\*\*\s*\*"([^"]+)"/);
+                referencedImagePrompt = match ? match[1] : (imgEmbed.description || "");
+              } else {
+                referencedTextContext = refMsg.content || refMsg.embeds?.[0]?.description || "";
               }
             }
           } catch (_) {}
@@ -1217,7 +1229,6 @@ function connect() {
                   message_reference: { message_id: msg.id }
                 })
               });
-              return;
             }
 
             try {
@@ -1253,7 +1264,7 @@ function connect() {
           }
 
           // I. Default: Intelligent AI Q&A via Google Gemini!
-          const replyText = await generateAiAnswer(cleanQuestion || "halo", msg.author.id, msg.channel_id);
+          const replyText = await generateAiAnswer(cleanQuestion || "halo", msg.author.id, msg.channel_id, referencedTextContext);
 
           await discordApi(`/channels/${msg.channel_id}/messages`, {
             method: "POST",
