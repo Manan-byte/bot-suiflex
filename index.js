@@ -137,6 +137,41 @@ function cacheMessage(msg) {
     messageCache.delete(firstKey);
   }
 }
+// Member Roster Cache for Dynamic Tagging / Mentions
+let guildMembersCache = [];
+
+async function refreshGuildMembers() {
+  try {
+    const res = await discordApi(`/guilds/${SUIFLEX_GUILD_ID}/members?limit=1000`);
+    const data = await res.json();
+    if (Array.isArray(data)) {
+      guildMembersCache = data.filter(m => !m.user.bot).map(m => ({
+        id: m.user.id,
+        username: m.user.username,
+        globalName: m.user.global_name,
+        nick: m.nick
+      }));
+      console.log(`[Member Roster] Cached ${guildMembersCache.length} members for tagging.`);
+    }
+  } catch (err) {
+    console.error("[Member Roster] Failed to cache members:", err.message);
+  }
+}
+
+function findMemberToTag(queryText) {
+  const q = queryText.toLowerCase();
+  for (const m of guildMembersCache) {
+    const names = [m.username, m.globalName, m.nick].filter(Boolean).map(n => n.toLowerCase());
+    for (const name of names) {
+      const words = name.split(/[\s+_\-.]+/);
+      if (q.includes(name) || words.some(w => w.length >= 3 && q.includes(w))) {
+        return m;
+      }
+      if (q.includes("badrus") && name.includes("badh")) return m;
+    }
+  }
+  return null;
+}
 
 // Discord REST API Helper
 async function discordApi(endpoint, options = {}) {
@@ -384,6 +419,41 @@ function formatModuleAnswer(modKey) {
     `🌐 Dokumentasi Resmi: [https://www.suiflex.dev](https://www.suiflex.dev) • [GitHub](${mod.url})`
   ].join("\n");
 }
+function generateAiImage(prompt, authorId) {
+  const seed = Math.floor(Math.random() * 1000000);
+  const encodedPrompt = encodeURIComponent(prompt.trim());
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&seed=${seed}&nologo=true`;
+
+  return {
+    embeds: [{
+      title: "🎨 AI Generated Image • Architect Vision",
+      description: `**Prompt:** *"${prompt.trim()}"*\n**Dimensi:** 1024x1024 HD • **Model:** Flux AI`,
+      image: { url: imageUrl },
+      color: 0x9B59B6,
+      footer: { text: "Dibuat oleh Suiflex Architect AI" },
+      timestamp: new Date().toISOString()
+    }],
+    components: [
+      {
+        type: 1,
+        components: [
+          {
+            type: 2,
+            style: 5,
+            label: "🖼️ Buka Gambar Resolusi Penuh",
+            url: imageUrl
+          },
+          {
+            type: 2,
+            style: 5,
+            label: "🌐 Suiflex Portal",
+            url: "https://www.suiflex.dev"
+          }
+        ]
+      }
+    ]
+  };
+}
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 async function queryGeminiAi(userQuestion, authorId, channelId) {
   const channelScope = CHANNEL_MODULE_SCOPE[channelId];
@@ -391,6 +461,20 @@ async function queryGeminiAi(userQuestion, authorId, channelId) {
   if (channelScope) {
     channelContextDesc = `Channel khusus kategori ${channelScope.name} (Modul ID: ${channelScope.mod}). DISKUSI DI SINI HANYA UNTUK ${channelScope.name}. JIKA PENGGUNA BERTANYA TENTANG MODUL LAIN, TOLAK DENGAN SANTUN DAN ARAHKAN KE CHANNEL MODUL YANG BERSANGKUTAN. JANGAN JELASKAN MODUL LAIN TERSEBUT DI SINI.`;
   }
+
+  // Fast-path: Check if user is asking to tag/mention someone
+  const cleanQ = (userQuestion || "").toLowerCase().trim();
+  const isTagRequest = cleanQ.startsWith("tag ") || cleanQ.startsWith("panggil ") || cleanQ.startsWith("mention ") ||
+    cleanQ.includes("tolong tag ") || cleanQ.includes("tolong panggil ") || cleanQ.includes("coba tag ") || cleanQ.includes("bisa tag ");
+
+  if (isTagRequest) {
+    const target = findMemberToTag(cleanQ);
+    if (target) {
+      return `Halo <@${target.id}>! Kamu dipanggil oleh <@${authorId}> nih 👋`;
+    }
+  }
+
+  const memberListSnippet = guildMembersCache.map(m => `- ${m.globalName || m.username}: <@${m.id}>`).join("\n");
 
   const systemPrompt = `
 Kamu adalah Architect, asisten AI resmi komunitas open-source Suiflex Open Engineering (https://www.suiflex.dev).
@@ -419,8 +503,13 @@ ATURAN WAJIB & MUTLAK:
      * Jika bertanya hal umum/di luar Suiflex (misal tanya kanopi, masak, coding umum di channel rdb): Tolak dengan santun bahwa channel ini khusus untuk modul tersebut, dan arahkan mereka untuk bertanya di channel umum <#1540268259645857863>!
 3. JIKA PERTANYAAN NGACO / GIBBERISH / ACUR DI CHANNEL KATEGORI:
    - Tanggapi ramah bahwa kamu belum memahami maksudnya, dan sebutkan contoh hal yang dapat ditanyakan seputar modul channel tersebut.
+4. ATURAN MEN-TAG / MEMANGGIL ANGGOTA:
+   - Jika pengguna meminta kamu untuk men-tag atau memanggil anggota (misal: 'tag enriko', 'panggil wahyu', 'mention matoa'):
+   - Kamu BISA DAN WAJIB men-tag mereka menggunakan format mention Discord <@USER_ID>.
+   - Daftar anggota terdaftar:
+${memberListSnippet}
+   - Contoh respons: "Halo <@759727431992737792>! Kamu dipanggil oleh <@authorId> nih 👋"
 `;
-
   const models = ["gemini-3.5-flash-lite", "gemini-3.6-flash"];
   for (const model of models) {
     try {
@@ -838,9 +927,61 @@ function connect() {
             .replace(/<@!?1552302920912080927>/g, "")
             .replace(/<@&1552307486613311610>/g, "")
             .trim();
+          // A. Check for Image Generation Intent
+          const isImageRequest = cleanQuestion.startsWith("buatkan gambar") ||
+            cleanQuestion.startsWith("gambarkan") ||
+            cleanQuestion.startsWith("generate gambar") ||
+            cleanQuestion.startsWith("bikin gambar") ||
+            cleanQuestion.startsWith("gambar ") ||
+            cleanQuestion.startsWith("generate image");
+
+          if (isImageRequest) {
+            const imgPrompt = cleanQuestion
+              .replace(/^(buatkan gambar|gambarkan|generate gambar|bikin gambar|gambar|generate image)\s*/i, "")
+              .trim();
+
+            const imgPayload = generateAiImage(imgPrompt || "futuristic technology landscape", msg.author.id);
+            await discordApi(`/channels/${msg.channel_id}/messages`, {
+              method: "POST",
+              body: JSON.stringify({
+                ...imgPayload,
+                message_reference: { message_id: msg.id }
+              })
+            });
+            return;
+          }
+
+          // B. Check for Document Creation Intent
+          const isDocRequest = cleanQuestion.startsWith("buatkan dokumen") ||
+            cleanQuestion.startsWith("bikin dokumen") ||
+            cleanQuestion.startsWith("buatkan doc") ||
+            cleanQuestion.startsWith("tuliskan dokumen");
+
+          if (isDocRequest) {
+            const topic = cleanQuestion
+              .replace(/^(buatkan dokumen|bikin dokumen|buatkan doc|tuliskan dokumen)\s*/i, "")
+              .trim();
+
+            const docPrompt = `Buatkan dokumen teknis profesional yang terstruktur lengkap dalam format Markdown mengenai topik: "${topic}". Dokumen harus mencakup: Judul, Pendahuluan, Arsitektur/Spesifikasi, Alur Kerja, Panduan Implementasi, dan Kesimpulan.`;
+            const docText = await generateAiAnswer(docPrompt, msg.author.id, msg.channel_id);
+
+            await discordApi(`/channels/${msg.channel_id}/messages`, {
+              method: "POST",
+              body: JSON.stringify({
+                embeds: [{
+                  title: `📄 Dokumen: ${topic}`,
+                  description: docText.length > 4000 ? docText.slice(0, 3950) + "...\n*(Dokumen terpotong batas maksimal)*" : docText,
+                  color: 0x1ABC9C,
+                  footer: { text: "Dokumen Resmi • Dibuat oleh Suiflex Architect AI" },
+                  timestamp: new Date().toISOString()
+                }],
+                message_reference: { message_id: msg.id }
+              })
+            });
+            return;
+          }
 
           const replyText = await generateAiAnswer(cleanQuestion || "halo", msg.author.id, msg.channel_id);
-
           await discordApi(`/channels/${msg.channel_id}/messages`, {
             method: "POST",
             body: JSON.stringify({
@@ -1208,6 +1349,42 @@ function connect() {
               ]
             });
           }
+          // 9. /image (AI Image Generator)
+          if (cmdName === "image") {
+            const prompt = cmdData.options?.[0]?.value || "futuristic technology landscape";
+            const imagePayload = generateAiImage(prompt, member.user.id);
+            await reply(imagePayload);
+          }
+
+          // 10. /doc (AI Document Maker)
+          if (cmdName === "doc") {
+            const topic = cmdData.options?.[0]?.value || "Software Specification";
+            const prompt = `Buatkan dokumen teknis profesional yang terstruktur lengkap dalam format Markdown mengenai topik: "${topic}". Dokumen harus mencakup: Judul, Pendahuluan, Arsitektur/Spesifikasi, Alur Kerja, Panduan Implementasi, dan Kesimpulan.`;
+            const docText = await generateAiAnswer(docPrompt, member.user.id, interaction.channel_id);
+
+            await reply({
+              embeds: [{
+                title: `📄 Dokumen: ${topic}`,
+                description: docText.length > 4000 ? docText.slice(0, 3950) + "...\n*(Dokumen terpotong batas maksimal)*" : docText,
+                color: 0x1ABC9C,
+                footer: { text: "Dokumen Resmi • Dibuat oleh Suiflex Architect AI" },
+                timestamp: new Date().toISOString()
+              }],
+              components: [
+                {
+                  type: 1,
+                  components: [
+                    {
+                      type: 2,
+                      style: 5,
+                      label: "🌐 Dokumentasi Suiflex",
+                      url: "https://www.suiflex.dev"
+                    }
+                  ]
+                }
+              ]
+            });
+          }
         }
       }
 
@@ -1264,5 +1441,8 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`[Architect v3.0] HTTP Webhook Server listening on port ${PORT}`);
 });
+// Initialize member roster cache
+refreshGuildMembers();
+setInterval(refreshGuildMembers, 15 * 60 * 1000);
 
 connect();
