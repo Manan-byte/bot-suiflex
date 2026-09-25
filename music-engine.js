@@ -149,7 +149,7 @@ function buildMusicCard(song, isPaused = false, queueLength = 0, loopQueue = fal
     embed.setThumbnail(song.thumbnail);
   }
 
-  // Row 1: Core playback & Volume Controls (5 buttons max)
+  // Row 1: Playback & Volume (4 buttons)
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('btn_pause_resume')
@@ -170,15 +170,10 @@ function buildMusicCard(song, isPaused = false, queueLength = 0, loopQueue = fal
       .setCustomId('btn_vol_up')
       .setLabel('+15%')
       .setEmoji('🔊')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId('btn_stop')
-      .setLabel('Stop')
-      .setEmoji('⏹️')
-      .setStyle(ButtonStyle.Danger)
+      .setStyle(ButtonStyle.Secondary)
   );
 
-  // Row 2: Modes & Queue Manager (4 buttons max)
+  // Row 2: Modes & Queue (4 buttons)
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('btn_loop_queue')
@@ -197,12 +192,21 @@ function buildMusicCard(song, isPaused = false, queueLength = 0, loopQueue = fal
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId('btn_clear_queue')
-      .setLabel('Clear Queue')
+      .setLabel('Clear')
       .setEmoji('🗑️')
       .setStyle(ButtonStyle.Secondary)
   );
 
-  return { embeds: [embed], components: [row1, row2] };
+  // Row 3: Stop Button (Full red exit)
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('btn_stop')
+      .setLabel('Stop & Disconnect')
+      .setEmoji('⏹️')
+      .setStyle(ButtonStyle.Danger)
+  );
+
+  return { embeds: [embed], components: [row1, row2, row3] };
 }
 
 async function repostPlayerCardAtBottom(serverQueue, channel) {
