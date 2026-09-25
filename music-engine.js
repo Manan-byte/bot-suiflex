@@ -1,13 +1,12 @@
-/**
- * Suiflex Architect - Diva High-Performance Music Engine Module
- * Features:
- * - Direct yt-dlp native extraction & PCM 48kHz FFmpeg stream
- * - Zero-prefix hands-free song queueing
- * - Sticky bottom player card
- * - Smart deduplication
- * - Loop Queue, 24/7 Lofi Radio & Smart Auto-Leave
- */
-
+const {
+  Client,
+  GatewayIntentBits,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ChannelType
+} = require('discord.js');
 const {
   joinVoiceChannel,
   createAudioPlayer,
@@ -17,24 +16,25 @@ const {
   NoSubscriberBehavior,
   StreamType
 } = require('@discordjs/voice');
-const {
-  EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
-  ChannelType
-} = require('discord.js');
 const { spawn } = require('child_process');
-const path = require('path');
 const fs = require('fs');
 const prism = require('prism-media');
 
+const TOKEN = process.env.DISCORD_TOKEN || Buffer.from("TVRVMU1qTXdNamt5TURreE1qQTRNRGt5TncuR29zcUlFLlFQZjU5WjQyY0NULXVWcFVIVU1DV0Y3T1VZUnZhak11NTZfNkZV", "base64").toString("utf-8");
 const YTDLP_PATH = process.platform === 'win32'
   ? (fs.existsSync(path.join(__dirname, 'yt-dlp.exe')) ? path.join(__dirname, 'yt-dlp.exe') : 'yt-dlp')
   : (fs.existsSync('/usr/local/bin/yt-dlp') ? '/usr/local/bin/yt-dlp' : 'yt-dlp');
+const DYNAMIC_LOFI_QUERY = "ytsearch1:lofi hip hop radio live beats to relax study to";
+const LOFI_STREAM_URL = "https://www.youtube.com/watch?v=jfKfPfyJRdk";
 
-const LOFI_STREAM_URL = "https://www.youtube.com/watch?v=jfKfPfyJRdk"; // 24/7 Lofi Girl stream
-const PREFIX = '!';
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildVoiceStates
+  ]
+});
 
 const musicQueues = new Map();
 
@@ -204,24 +204,27 @@ async function repostPlayerCardAtBottom(serverQueue, channel) {
     serverQueue.message = await targetChannel.send(payload).catch(() => null);
   } catch (e) {}
 }
-
 async function startLofiRadio(serverQueue, textChannel) {
   serverQueue.isRadio = true;
-  serverQueue.current = {
-    title: "Lofi Girl - Beats to Relax/Study to (24/7 Lofi Hip Hop Radio)",
-    url: LOFI_STREAM_URL,
-    durationFormatted: "24/7 LIVE",
-    thumbnail: "https://i.ytimg.com/vi/jfKfPfyJRdk/maxresdefault.jpg",
-    requestedBy: "Auto-Lofi 24/7"
-  };
-
   try {
+    // Dynamically resolve active live stream
+    const liveData = await searchSongWithYtDlp(DYNAMIC_LOFI_QUERY);
+    const streamUrl = liveData?.url || "https://www.youtube.com/watch?v=rFZHOHl-L8A";
+
+    serverQueue.current = {
+      title: liveData?.title || "Lofi Hip Hop Radio · Beats to Relax/Study to",
+      url: streamUrl,
+      durationFormatted: "24/7 LIVE",
+      thumbnail: liveData?.thumbnail || "https://i.ytimg.com/vi/rFZHOHl-L8A/maxresdefault.jpg",
+      requestedBy: "Auto-Radio 24/7"
+    };
+
     if (serverQueue.currentProcess) {
       serverQueue.currentProcess.kill();
       serverQueue.currentProcess = null;
     }
 
-    const audioStreamHandle = createStreamFromYtDlp(LOFI_STREAM_URL);
+    const audioStreamHandle = createStreamFromYtDlp(streamUrl);
     serverQueue.currentProcess = audioStreamHandle;
 
     const resource = createAudioResource(audioStreamHandle.stream, {
@@ -253,8 +256,9 @@ async function playNext(guildId, textChannel) {
   if (serverQueue.queue.length === 0) {
     serverQueue.current = null;
 
+    // Auto-transition to 24/7 Lofi Radio if enabled
     if (serverQueue.mode247) {
-      return startLofiRadio(serverQueue, textChannel);
+      return startLofiRadio(serverQueue, serverQueue.lastTextChannel);
     }
 
     if (serverQueue.message) {
@@ -267,7 +271,6 @@ async function playNext(guildId, textChannel) {
     if (serverQueue.lastTextChannel) serverQueue.lastTextChannel.send({ embeds: [idleEmbed] }).catch(() => {});
     return;
   }
-
   serverQueue.isRadio = false;
   const song = serverQueue.queue.shift();
   serverQueue.current = song;
@@ -307,13 +310,11 @@ async function handleSingleCommand(parsedLine, message, serverQueue, voiceChanne
     requestedBy: message.author.tag
   };
 
-  // If connection doesn't exist OR user has switched to a different voice channel:
-  const isAlreadyConnectedToSameChannel = serverQueue.connection &&
+  const isAlreadyInSameRoom = serverQueue.connection &&
     serverQueue.connection.state.status !== VoiceConnectionStatus.Destroyed &&
     serverQueue.connection.joinConfig.channelId === voiceChannel.id;
 
-  if (!isAlreadyConnectedToSameChannel) {
-    // If connected to another room, destroy old connection before joining the new room
+  if (!isAlreadyInSameRoom) {
     if (serverQueue.connection && serverQueue.connection.state.status !== VoiceConnectionStatus.Destroyed) {
       try { serverQueue.connection.destroy(); } catch (e) {}
       serverQueue.connection = null;
@@ -352,351 +353,284 @@ async function handleSingleCommand(parsedLine, message, serverQueue, voiceChanne
   return { songInfo, isNext };
 }
 
-function initMusicEngine(discordClient) {
-  console.log("🎶 Initializing Diva Music Engine into Architect Cloud Bot...");
+client.on('messageCreate', async (message) => {
+  if (message.author.bot || !message.guild) return;
 
-  discordClient.on('messageCreate', async (message) => {
-    if (message.author.bot || !message.guild) return;
+  console.log(`[USER-CMD] #${message.channel.name}: "${message.content}" from ${message.author.tag}`);
 
-    console.log(`[MUSIC-CORE] Received in #${message.channel.name || message.channel.id} by ${message.author.tag}: "${message.content}"`);
+  const serverQueue = getOrCreateQueue(message.guild.id);
+  serverQueue.lastTextChannel = message.channel;
 
-    const serverQueue = getOrCreateQueue(message.guild.id);
-    serverQueue.lastTextChannel = message.channel;
+  const lines = message.content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  const parsedCommands = [];
 
-    const isDedicatedMusicChannel =
-      message.channel.type === ChannelType.GuildVoice ||
-      message.channel.name?.includes('bot') ||
-      message.channel.name?.includes('music') ||
-      message.channel.name?.includes('lagu') ||
-      message.channel.name?.includes('lounge') ||
-      message.channel.name?.includes('chill') ||
-      message.channel.name?.includes('room');
+  for (const rawLine of lines) {
+    let line = rawLine.replace(/<[@#][!&]?\d+>/g, '').trim();
+    if (!line) continue;
 
-    const lines = message.content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-    const parsedCommands = [];
+    let isNext = false;
+    let cmd = null;
+    let queryArgs = [];
 
-    for (const rawLine of lines) {
-      let line = rawLine.replace(/<[@#][!&]?\d+>/g, '').trim();
-      if (!line) continue;
-      let isNext = false;
-      let cmd = null;
-      let queryArgs = [];
+    if (line.toLowerCase().startsWith('next play ')) {
+      isNext = true;
+      cmd = 'playnext';
+      queryArgs = line.slice(10).trim().split(/ +/);
+    } else if (line.toLowerCase().startsWith('play next ')) {
+      isNext = true;
+      cmd = 'playnext';
+      queryArgs = line.slice(10).trim().split(/ +/);
+    } else if (line.toLowerCase().startsWith('next ') && !line.toLowerCase().startsWith('nextplay')) {
+      isNext = true;
+      cmd = 'playnext';
+      queryArgs = line.slice(5).trim().split(/ +/);
+    } else if (line.toLowerCase().startsWith('!playnext ') || line.toLowerCase().startsWith('!nextplay ') || line.toLowerCase().startsWith('!pn ')) {
+      isNext = true;
+      cmd = 'playnext';
+      queryArgs = line.slice(line.indexOf(' ') + 1).trim().split(/ +/);
+    } else if (line.toLowerCase().startsWith('play ')) {
+      isNext = false;
+      cmd = 'play';
+      queryArgs = line.slice(5).trim().split(/ +/);
+    } else if (line.toLowerCase().startsWith('!play ') || line.toLowerCase().startsWith('!p ')) {
+      isNext = false;
+      cmd = 'play';
+      queryArgs = line.slice(line.indexOf(' ') + 1).trim().split(/ +/);
+    } else if (line.toLowerCase() === 'skip' || line.toLowerCase() === '!skip' || line.toLowerCase() === '!s' || line.toLowerCase() === 'next') {
+      cmd = 'skip';
+    } else if (line.toLowerCase() === 'stop' || line.toLowerCase() === '!stop') {
+      cmd = 'stop';
+    } else if (line.toLowerCase() === 'pause' || line.toLowerCase() === '!pause') {
+      cmd = 'pause';
+    } else if (line.toLowerCase() === 'resume' || line.toLowerCase() === '!resume') {
+      cmd = 'resume';
+    } else if (line.toLowerCase() === 'queue' || line.toLowerCase() === '!queue' || line.toLowerCase() === '!q') {
+      cmd = 'queue';
+    } else if (line.toLowerCase() === 'loop' || line.toLowerCase() === '!loop') {
+      cmd = 'loop';
+    } else if (line.toLowerCase() === '24/7' || line.toLowerCase() === 'lofi' || line.toLowerCase() === '!lofi' || line.toLowerCase() === '!24/7') {
+      cmd = '24/7';
+    } else {
+      isNext = false;
+      cmd = 'play';
+      queryArgs = line.split(/ +/);
+    }
 
-      if (line.toLowerCase().startsWith('next play ')) {
-        isNext = true;
-        cmd = 'playnext';
-        queryArgs = line.slice(10).trim().split(/ +/);
-      } else if (line.toLowerCase().startsWith('play next ')) {
-        isNext = true;
-        cmd = 'playnext';
-        queryArgs = line.slice(10).trim().split(/ +/);
-      } else if (line.toLowerCase().startsWith('next ') && !line.toLowerCase().startsWith('nextplay')) {
-        isNext = true;
-        cmd = 'playnext';
-        queryArgs = line.slice(5).trim().split(/ +/);
-      } else if (line.toLowerCase().startsWith('!playnext ') || line.toLowerCase().startsWith('!nextplay ') || line.toLowerCase().startsWith('!pn ')) {
-        isNext = true;
-        cmd = 'playnext';
-        queryArgs = line.slice(line.indexOf(' ') + 1).trim().split(/ +/);
-      } else if (line.toLowerCase().startsWith('play ')) {
-        isNext = false;
-        cmd = 'play';
-        queryArgs = line.slice(5).trim().split(/ +/);
-      } else if (line.toLowerCase().startsWith('!play ') || line.toLowerCase().startsWith('!p ')) {
-        isNext = false;
-        cmd = 'play';
-        queryArgs = line.slice(line.indexOf(' ') + 1).trim().split(/ +/);
-      } else if (line.toLowerCase() === 'skip' || line.toLowerCase() === '!skip' || line.toLowerCase() === '!s' || line.toLowerCase() === 'next') {
-        cmd = 'skip';
-      } else if (line.toLowerCase() === 'stop' || line.toLowerCase() === '!stop') {
-        cmd = 'stop';
-      } else if (line.toLowerCase() === 'pause' || line.toLowerCase() === '!pause') {
-        cmd = 'pause';
-      } else if (line.toLowerCase() === 'resume' || line.toLowerCase() === '!resume') {
-        cmd = 'resume';
-      } else if (line.toLowerCase() === 'queue' || line.toLowerCase() === '!queue' || line.toLowerCase() === '!q') {
-        cmd = 'queue';
-      } else if (line.toLowerCase() === 'loop' || line.toLowerCase() === '!loop') {
-        cmd = 'loop';
-      } else if (line.toLowerCase() === '24/7' || line.toLowerCase() === 'lofi' || line.toLowerCase() === '!lofi' || line.toLowerCase() === '!24/7') {
-        cmd = '24/7';
-      } else if (isDedicatedMusicChannel && !line.startsWith('!') && !line.startsWith('/')) {
-        isNext = false;
-        cmd = 'play';
-        queryArgs = line.split(/ +/);
-      }
+    if (cmd) {
+      parsedCommands.push({ command: cmd, args: queryArgs, isNext });
+    }
+  }
 
-      if (cmd) {
-        parsedCommands.push({ command: cmd, args: queryArgs, isNext });
+  if (parsedCommands.length === 0) return;
+
+  const rawPlayCommands = parsedCommands.filter(p => p.command === 'play' || p.command === 'playnext');
+
+  const seenQueries = new Set();
+  const playCommands = [];
+  for (const p of rawPlayCommands) {
+    const qKey = p.args.join(' ').toLowerCase().trim();
+    if (!seenQueries.has(qKey)) {
+      seenQueries.add(qKey);
+      playCommands.push(p);
+    }
+  }
+
+  if (playCommands.length > 0) {
+    // 1. Check message.member.voice.channel
+    let voiceChannel = message.member?.voice?.channel;
+
+    // 2. If message is sent in a voice channel text chat (channel.type === 2), that IS the voice channel!
+    if (!voiceChannel && message.channel.type === ChannelType.GuildVoice) {
+      voiceChannel = message.channel;
+    }
+
+    // 3. Fallback: inspect guild voiceStates cache
+    if (!voiceChannel) {
+      const vs = message.guild.voiceStates.cache.get(message.author.id);
+      if (vs && vs.channelId) {
+        voiceChannel = message.guild.channels.cache.get(vs.channelId);
       }
     }
 
-    if (parsedCommands.length === 0) return;
+    // 4. Fallback: fetch member freshly from API
+    if (!voiceChannel) {
+      try {
+        const fetchedMember = await message.guild.members.fetch(message.author.id);
+        if (fetchedMember.voice && fetchedMember.voice.channelId) {
+          voiceChannel = message.guild.channels.cache.get(fetchedMember.voice.channelId);
+        }
+      } catch (e) {}
+    }
 
-    const rawPlayCommands = parsedCommands.filter(p => p.command === 'play' || p.command === 'playnext');
+    if (!voiceChannel) {
+      return message.reply("🔊 Kamu harus masuk ke Voice Channel dulu untuk memutar musik!");
+    }
 
-    // Smart input deduplication
-    const seenQueries = new Set();
-    const playCommands = [];
-    for (const p of rawPlayCommands) {
-      const qKey = p.args.join(' ').toLowerCase().trim();
-      if (!seenQueries.has(qKey)) {
-        seenQueries.add(qKey);
-        playCommands.push(p);
+    const loadingEmbed = new EmbedBuilder()
+      .setColor(0x2B2D31)
+      .setDescription(playCommands.length === 1 ? `🔎 *Mencari lagu...*` : `🔎 *Memproses ${playCommands.length} lagu sekaligus...*`);
+    const loadingMsg = await message.reply({ embeds: [loadingEmbed] });
+
+    const addedSongs = [];
+    const addedUrls = new Set();
+
+    for (const pCmd of playCommands) {
+      try {
+        const res = await handleSingleCommand(pCmd, message, serverQueue, voiceChannel);
+        if (res && res.songInfo) {
+          if (!addedUrls.has(res.songInfo.url)) {
+            addedUrls.add(res.songInfo.url);
+            addedSongs.push(res);
+          }
+        }
+      } catch (err) {
+        console.error("Batch play error:", err);
       }
     }
 
-    if (playCommands.length > 0) {
-      let voiceChannel = message.member?.voice?.channel;
-      if (!voiceChannel && message.channel.type === ChannelType.GuildVoice) {
-        voiceChannel = message.channel;
-      }
-      if (!voiceChannel) {
-        const vs = message.guild.voiceStates.cache.get(message.author.id);
-        if (vs && vs.channelId) {
-          voiceChannel = message.guild.channels.cache.get(vs.channelId);
-        }
-      }
-      if (!voiceChannel) {
-        try {
-          const fetchedMember = await message.guild.members.fetch(message.author.id);
-          if (fetchedMember.voice && fetchedMember.voice.channelId) {
-            voiceChannel = message.guild.channels.cache.get(fetchedMember.voice.channelId);
-          }
-        } catch (e) {}
-      }
-
-      if (!voiceChannel) {
-        return message.reply("🔊 Kamu harus masuk ke Voice Channel dulu untuk memutar musik!");
-      }
-
-      const loadingEmbed = new EmbedBuilder()
-        .setColor(0x2B2D31)
-        .setDescription(playCommands.length === 1 ? `🔎 *Mencari lagu...*` : `🔎 *Memproses ${playCommands.length} lagu sekaligus...*`);
-      const loadingMsg = await message.reply({ embeds: [loadingEmbed] });
-
-      const addedSongs = [];
-      const addedUrls = new Set();
-
-      for (const pCmd of playCommands) {
-        try {
-          const res = await handleSingleCommand(pCmd, message, serverQueue, voiceChannel);
-          if (res && res.songInfo) {
-            if (!addedUrls.has(res.songInfo.url)) {
-              addedUrls.add(res.songInfo.url);
-              addedSongs.push(res);
-            }
-          }
-        } catch (err) {
-          console.error("Batch play error:", err);
-        }
-      }
-
-      if (addedSongs.length === 0) {
-        const notFoundEmbed = new EmbedBuilder()
-          .setColor(0xED4245)
-          .setDescription("❌ Lagu tidak ditemukan. Pastikan judulnya benar!");
-        return loadingMsg.edit({ embeds: [notFoundEmbed] });
-      }
-
-      if (serverQueue.isRadio) {
-        await loadingMsg.delete().catch(() => {});
-        return playNext(message.guild.id, message.channel);
-      }
-
-      const isAlreadyPlaying = serverQueue.player.state.status === AudioPlayerStatus.Playing || serverQueue.player.state.status === AudioPlayerStatus.Paused;
-
-      if (!isAlreadyPlaying) {
-        await loadingMsg.delete().catch(() => {});
-        playNext(message.guild.id, message.channel);
-      } else {
-        const summaryList = addedSongs.map((item, idx) => {
-          const tag = item.isNext ? "⏭️ [NEXT]" : "✅";
-          return `${tag} **[${item.songInfo.title}](${item.songInfo.url})** (\`${item.songInfo.durationFormatted || '--:--'}\`)`;
-        }).join('\n');
-
-        const batchEmbed = new EmbedBuilder()
-          .setColor(0x5865F2)
-          .setTitle(addedSongs.length === 1 ? (addedSongs[0].isNext ? "⏭️ DISISIPKAN KE URUTAN BERIKUTNYA" : "✅ DITAMBAHKAN KE ANTREAN") : `🎶 Berhasil Menambahkan ${addedSongs.length} Lagu ke Antrean`)
-          .setDescription(summaryList)
-          .setFooter({ text: `Total antrean saat ini: ${serverQueue.queue.length} lagu` });
-
-        await loadingMsg.edit({ embeds: [batchEmbed] });
-        await repostPlayerCardAtBottom(serverQueue, message.channel);
-      }
-    }
-
-    // Handle other commands
-    for (const cmdItem of parsedCommands) {
-      if (cmdItem.command === 'skip') {
-        if (serverQueue && serverQueue.current) serverQueue.player.stop();
-      } else if (cmdItem.command === 'stop') {
-        if (serverQueue) {
-          serverQueue.queue = [];
-          serverQueue.current = null;
-          serverQueue.loopQueue = false;
-          serverQueue.mode247 = false;
-          serverQueue.player.stop();
-          if (serverQueue.currentProcess) {
-            serverQueue.currentProcess.kill();
-            serverQueue.currentProcess = null;
-          }
-          if (serverQueue.connection) {
-            serverQueue.connection.destroy();
-            serverQueue.connection = null;
-          }
-          if (serverQueue.message) {
-            serverQueue.message.delete().catch(() => {});
-            serverQueue.message = null;
-          }
-        }
-      } else if (cmdItem.command === 'pause') {
-        serverQueue.player.pause();
-        repostPlayerCardAtBottom(serverQueue, message.channel);
-      } else if (cmdItem.command === 'resume') {
-        serverQueue.player.unpause();
-        repostPlayerCardAtBottom(serverQueue, message.channel);
-      } else if (cmdItem.command === 'loop') {
-        serverQueue.loopQueue = !serverQueue.loopQueue;
-        repostPlayerCardAtBottom(serverQueue, message.channel);
-      } else if (cmdItem.command === '24/7') {
-        serverQueue.mode247 = !serverQueue.mode247;
-        if (serverQueue.mode247 && (!serverQueue.current || serverQueue.player.state.status === AudioPlayerStatus.Idle)) {
-          startLofiRadio(serverQueue, message.channel);
-        } else {
-          repostPlayerCardAtBottom(serverQueue, message.channel);
-        }
-      }
-    }
-  });
-
-  discordClient.on('interactionCreate', async (interaction) => {
-    if (!interaction.isButton()) return;
-    const serverQueue = musicQueues.get(interaction.guildId);
-    if (!serverQueue) {
-      return interaction.deferUpdate().catch(() => {});
-    }
-
-    if (interaction.customId === 'btn_pause_resume') {
-      const isCurrentlyPaused = serverQueue.player.state.status === AudioPlayerStatus.Paused || serverQueue.player.state.status === AudioPlayerStatus.AutoPaused;
-
-      if (isCurrentlyPaused) {
-        serverQueue.player.unpause();
-        if (serverQueue.current) {
-          const updatedPayload = buildMusicCard(serverQueue.current, false, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
-          return interaction.update(updatedPayload).catch(() => {});
-        }
-      } else {
-        serverQueue.player.pause();
-        if (serverQueue.current) {
-          const updatedPayload = buildMusicCard(serverQueue.current, true, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
-          return interaction.update(updatedPayload).catch(() => {});
-        }
-      }
-      return interaction.deferUpdate().catch(() => {});
-    } else if (interaction.customId === 'btn_skip') {
-      serverQueue.player.stop();
-      return interaction.deferUpdate().catch(() => {});
-    } else if (interaction.customId === 'btn_loop_queue') {
-      serverQueue.loopQueue = !serverQueue.loopQueue;
-      if (serverQueue.current) {
-        const isPaused = serverQueue.player.state.status === AudioPlayerStatus.Paused || serverQueue.player.state.status === AudioPlayerStatus.AutoPaused;
-        const updatedPayload = buildMusicCard(serverQueue.current, isPaused, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
-        return interaction.update(updatedPayload).catch(() => {});
-      }
-      return interaction.deferUpdate().catch(() => {});
-    } else if (interaction.customId === 'btn_radio_247') {
-      serverQueue.mode247 = !serverQueue.mode247;
-      if (serverQueue.mode247 && (!serverQueue.current || serverQueue.player.state.status === AudioPlayerStatus.Idle)) {
-        startLofiRadio(serverQueue, interaction.channel);
-        return interaction.deferUpdate().catch(() => {});
-      } else if (serverQueue.current) {
-        const isPaused = serverQueue.player.state.status === AudioPlayerStatus.Paused || serverQueue.player.state.status === AudioPlayerStatus.AutoPaused;
-        const updatedPayload = buildMusicCard(serverQueue.current, isPaused, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
-        return interaction.update(updatedPayload).catch(() => {});
-      }
-      return interaction.deferUpdate().catch(() => {});
-    } else if (interaction.customId === 'btn_stop') {
-      serverQueue.queue = [];
-      serverQueue.current = null;
-      serverQueue.loopQueue = false;
-      serverQueue.mode247 = false;
-      serverQueue.player.stop();
-      if (serverQueue.currentProcess) {
-        serverQueue.currentProcess.kill();
-        serverQueue.currentProcess = null;
-      }
-      if (serverQueue.connection) {
-        serverQueue.connection.destroy();
-        serverQueue.connection = null;
-      }
-      if (serverQueue.message) {
-        serverQueue.message.delete().catch(() => {});
-        serverQueue.message = null;
-      }
-      const stoppedEmbed = new EmbedBuilder()
+    if (addedSongs.length === 0) {
+      const notFoundEmbed = new EmbedBuilder()
         .setColor(0xED4245)
-        .setDescription("⏹️ Pemutaran dihentikan & bot keluar.");
-      return interaction.update({ embeds: [stoppedEmbed], components: [] }).catch(() => {});
-    } else if (interaction.customId === 'btn_queue') {
-      let qStr = `**Sedang Memutar:**\n🎶 ${serverQueue.current?.title || '-'}\n\n**Antrean Berikutnya:**\n`;
-      if (serverQueue.queue.length === 0) {
-        qStr += "*(Kosong)*";
-      } else {
-        qStr += serverQueue.queue.map((s, i) => `\`${i + 1}.\` ${s.title}`).slice(0, 5).join('\n');
-      }
-      return interaction.reply({ content: qStr, flags: 64 });
+        .setDescription("❌ Lagu tidak ditemukan. Pastikan judulnya benar!");
+      return loadingMsg.edit({ embeds: [notFoundEmbed] });
     }
-  });
 
-  discordClient.on('voiceStateUpdate', (oldState, newState) => {
-    const guild = oldState.guild || newState.guild;
-    const serverQueue = musicQueues.get(guild.id);
-    if (!serverQueue || !serverQueue.connection) return;
+    const isAlreadyPlaying = serverQueue.player.state.status === AudioPlayerStatus.Playing || serverQueue.player.state.status === AudioPlayerStatus.Paused;
 
-    if (serverQueue.mode247) return;
+    if (!isAlreadyPlaying) {
+      await loadingMsg.delete().catch(() => {});
+      playNext(message.guild.id, message.channel);
+    } else {
+      const summaryList = addedSongs.map((item, idx) => {
+        const tag = item.isNext ? "⏭️ [NEXT]" : "✅";
+        return `${tag} **[${item.songInfo.title}](${item.songInfo.url})** (\`${item.songInfo.durationFormatted || '--:--'}\`)`;
+      }).join('\n');
 
-    const botVoiceChannel = guild.channels.cache.get(serverQueue.connection.joinConfig.channelId);
-    if (!botVoiceChannel) return;
+      const batchEmbed = new EmbedBuilder()
+        .setColor(0x5865F2)
+        .setTitle(addedSongs.length === 1 ? (addedSongs[0].isNext ? "⏭️ DISISIPKAN KE URUTAN BERIKUTNYA" : "✅ DITAMBAHKAN KE ANTREAN") : `🎶 Berhasil Menambahkan ${addedSongs.length} Lagu ke Antrean`)
+        .setDescription(summaryList)
+        .setFooter({ text: `Total antrean saat ini: ${serverQueue.queue.length} lagu` });
 
-    const humanMembers = botVoiceChannel.members.filter(m => !m.user.bot);
+      await loadingMsg.edit({ embeds: [batchEmbed] });
+      await repostPlayerCardAtBottom(serverQueue, message.channel);
+    }
+  }
 
-    if (humanMembers.size === 0) {
-      if (!serverQueue.leaveTimeout) {
-        serverQueue.leaveTimeout = setTimeout(() => {
-          const checkChannel = guild.channels.cache.get(serverQueue.connection?.joinConfig?.channelId);
-          const checkHumans = checkChannel ? checkChannel.members.filter(m => !m.user.bot) : [];
+  for (const cmdItem of parsedCommands) {
+    if (cmdItem.command === 'skip') {
+      if (serverQueue && serverQueue.current) serverQueue.player.stop();
+    } else if (cmdItem.command === 'stop') {
+      if (serverQueue) {
+        serverQueue.queue = [];
+        serverQueue.current = null;
+        serverQueue.loopQueue = false;
+        serverQueue.mode247 = false;
+        serverQueue.player.stop();
+        if (serverQueue.currentProcess) {
+          serverQueue.currentProcess.kill();
+          serverQueue.currentProcess = null;
+        }
+        if (serverQueue.connection) {
+          serverQueue.connection.destroy();
+          serverQueue.connection = null;
+        }
+        if (serverQueue.message) {
+          serverQueue.message.delete().catch(() => {});
+          serverQueue.message = null;
+        }
+      }
+    } else if (cmdItem.command === 'pause') {
+      serverQueue.player.pause();
+      repostPlayerCardAtBottom(serverQueue, message.channel);
+    } else if (cmdItem.command === 'resume') {
+      serverQueue.player.unpause();
+      repostPlayerCardAtBottom(serverQueue, message.channel);
+    }
+  }
+});
 
-          if (checkHumans.size === 0 && !serverQueue.mode247) {
-            serverQueue.queue = [];
-            serverQueue.current = null;
-            serverQueue.player.stop();
-            if (serverQueue.currentProcess) {
-              serverQueue.currentProcess.kill();
-              serverQueue.currentProcess = null;
-            }
-            if (serverQueue.connection) {
-              serverQueue.connection.destroy();
-              serverQueue.connection = null;
-            }
-            if (serverQueue.message) {
-              serverQueue.message.delete().catch(() => {});
-              serverQueue.message = null;
-            }
-            if (serverQueue.lastTextChannel) {
-              serverQueue.lastTextChannel.send("💤 *Semua orang telah meninggalkan voice channel. Bot otomatis keluar untuk menghemat resource.*").catch(() => {});
-            }
-          }
-          serverQueue.leaveTimeout = null;
-        }, 120000);
+client.on('interactionCreate', async (interaction) => {
+  if (!interaction.isButton()) return;
+  const serverQueue = musicQueues.get(interaction.guildId);
+  if (!serverQueue) {
+    return interaction.deferUpdate().catch(() => {});
+  }
+
+  if (interaction.customId === 'btn_pause_resume') {
+    const isCurrentlyPaused = serverQueue.player.state.status === AudioPlayerStatus.Paused || serverQueue.player.state.status === AudioPlayerStatus.AutoPaused;
+
+    if (isCurrentlyPaused) {
+      serverQueue.player.unpause();
+      if (serverQueue.current) {
+        const updatedPayload = buildMusicCard(serverQueue.current, false, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
+        return interaction.update(updatedPayload).catch(() => {});
       }
     } else {
-      if (serverQueue.leaveTimeout) {
-        clearTimeout(serverQueue.leaveTimeout);
-        serverQueue.leaveTimeout = null;
+      serverQueue.player.pause();
+      if (serverQueue.current) {
+        const updatedPayload = buildMusicCard(serverQueue.current, true, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
+        return interaction.update(updatedPayload).catch(() => {});
       }
     }
-  });
-}
+    return interaction.deferUpdate().catch(() => {});
+  } else if (interaction.customId === 'btn_skip') {
+    serverQueue.player.stop();
+    return interaction.deferUpdate().catch(() => {});
+  } else if (interaction.customId === 'btn_loop_queue') {
+    serverQueue.loopQueue = !serverQueue.loopQueue;
+    if (serverQueue.current) {
+      const isPaused = serverQueue.player.state.status === AudioPlayerStatus.Paused || serverQueue.player.state.status === AudioPlayerStatus.AutoPaused;
+      const updatedPayload = buildMusicCard(serverQueue.current, isPaused, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
+      return interaction.update(updatedPayload).catch(() => {});
+    }
+    return interaction.deferUpdate().catch(() => {});
+  } else if (interaction.customId === 'btn_radio_247') {
+    serverQueue.mode247 = !serverQueue.mode247;
+    if (serverQueue.mode247 && (!serverQueue.current || serverQueue.player.state.status === AudioPlayerStatus.Idle)) {
+      startLofiRadio(serverQueue, interaction.channel);
+      return interaction.deferUpdate().catch(() => {});
+    } else if (serverQueue.current) {
+      const isPaused = serverQueue.player.state.status === AudioPlayerStatus.Paused || serverQueue.player.state.status === AudioPlayerStatus.AutoPaused;
+      const updatedPayload = buildMusicCard(serverQueue.current, isPaused, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
+      return interaction.update(updatedPayload).catch(() => {});
+    }
+    return interaction.deferUpdate().catch(() => {});
+  } else if (interaction.customId === 'btn_stop') {
+    serverQueue.queue = [];
+    serverQueue.current = null;
+    serverQueue.loopQueue = false;
+    serverQueue.mode247 = false;
+    serverQueue.player.stop();
+    if (serverQueue.currentProcess) {
+      serverQueue.currentProcess.kill();
+      serverQueue.currentProcess = null;
+    }
+    if (serverQueue.connection) {
+      serverQueue.connection.destroy();
+      serverQueue.connection = null;
+    }
+    if (serverQueue.message) {
+      serverQueue.message.delete().catch(() => {});
+      serverQueue.message = null;
+    }
+    const stoppedEmbed = new EmbedBuilder()
+      .setColor(0xED4245)
+      .setDescription("⏹️ Pemutaran dihentikan & bot keluar.");
+    return interaction.update({ embeds: [stoppedEmbed], components: [] }).catch(() => {});
+  } else if (interaction.customId === 'btn_queue') {
+    let qStr = `**Sedang Memutar:**\n🎶 ${serverQueue.current?.title || '-'}\n\n**Antrean Berikutnya:**\n`;
+    if (serverQueue.queue.length === 0) {
+      qStr += "*(Kosong)*";
+    } else {
+      qStr += serverQueue.queue.map((s, i) => `\`${i + 1}.\` ${s.title}`).slice(0, 5).join('\n');
+    }
+    return interaction.reply({ content: qStr, flags: 64 });
+  }
+});
 
-module.exports = { initMusicEngine };
+client.once('ready', () => {
+  console.log(`🎶 Diva Music Bot (Always Listen) aktif sebagai ${client.user.tag}!`);
+});
+
+client.login(TOKEN);
