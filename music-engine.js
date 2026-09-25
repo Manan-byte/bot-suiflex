@@ -525,6 +525,15 @@ client.on('messageCreate', async (message) => {
       return loadingMsg.edit({ embeds: [notFoundEmbed] });
     }
 
+    // If in radio mode, immediately stop radio and start playing user song
+    if (serverQueue.isRadio) {
+      serverQueue.isRadio = false;
+      serverQueue.current = null;
+      await loadingMsg.delete().catch(() => {});
+      playNext(message.guild.id, message.channel);
+      return;
+    }
+
     const isAlreadyPlaying = serverQueue.player.state.status === AudioPlayerStatus.Playing || serverQueue.player.state.status === AudioPlayerStatus.Paused;
 
     if (!isAlreadyPlaying) {
