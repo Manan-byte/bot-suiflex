@@ -17,15 +17,13 @@ const {
   StreamType
 } = require('@discordjs/voice');
 const { spawn } = require('child_process');
+const path = require('path');
 const fs = require('fs');
 const prism = require('prism-media');
 
 const TOKEN = process.env.DISCORD_TOKEN || Buffer.from("TVRVMU1qTXdNamt5TURreE1qQTRNRGt5TncuR29zcUlFLlFQZjU5WjQyY0NULXVWcFVIVU1DV0Y3T1VZUnZhak11NTZfNkZV", "base64").toString("utf-8");
-const YTDLP_PATH = process.platform === 'win32'
-  ? (fs.existsSync(path.join(__dirname, 'yt-dlp.exe')) ? path.join(__dirname, 'yt-dlp.exe') : 'yt-dlp')
-  : (fs.existsSync('/usr/local/bin/yt-dlp') ? '/usr/local/bin/yt-dlp' : 'yt-dlp');
+const YTDLP_PATH = process.platform === 'win32' ? (fs.existsSync(path.join(__dirname, 'yt-dlp.exe')) ? path.join(__dirname, 'yt-dlp.exe') : 'yt-dlp') : (fs.existsSync('/usr/local/bin/yt-dlp') ? '/usr/local/bin/yt-dlp' : 'yt-dlp');
 const DYNAMIC_LOFI_QUERY = "ytsearch1:lofi hip hop radio live beats to relax study to";
-const LOFI_STREAM_URL = "https://www.youtube.com/watch?v=jfKfPfyJRdk";
 
 const client = new Client({
   intents: [
@@ -51,6 +49,8 @@ function getOrCreateQueue(guildId) {
       connection: null,
       player: player,
       currentProcess: null,
+      currentResource: null,
+      volume: 1.0, // Default 100%
       queue: [],
       current: null,
       loopQueue: false,
@@ -128,7 +128,10 @@ function createStreamFromYtDlp(url) {
   };
 }
 
-function buildMusicCard(song, isPaused = false, queueLength = 0, loopQueue = false, mode247 = false, isRadio = false) {
+function buildMusicCard(song, isPaused = false, queueLength = 0, loopQueue = false, mode247 = false, isRadio = false, volume = 1.0) {
+  const volPercent = Math.round(volume * 100);
+  const volIcon = volPercent === 0 ? '🔇' : (volPercent < 50 ? '🔉' : '🔊');
+
   const embed = new EmbedBuilder()
     .setColor(isRadio ? 0x9B59B6 : (isPaused ? 0xFEE75C : 0x5865F2))
     .setTitle(isRadio ? "📻 24/7 LOFI RADIO MODE" : (isPaused ? "⏸️ NOW PAUSED" : "🎵 NOW PLAYING"))
@@ -138,14 +141,15 @@ function buildMusicCard(song, isPaused = false, queueLength = 0, loopQueue = fal
       `👤 **${song.requestedBy.split('#')[0]}**  •  ` +
       `📜 **${queueLength} antrean**\n` +
       `🔁 **Loop:** \`${loopQueue ? 'ON' : 'OFF'}\`  •  ` +
-      `📻 **24/7:** \`${mode247 ? 'ON' : 'OFF'}\``
+      `📻 **24/7:** \`${mode247 ? 'ON' : 'OFF'}\`  •  ` +
+      `${volIcon} **Volume:** \`${volPercent}%\``
     );
 
   if (song.thumbnail) {
     embed.setThumbnail(song.thumbnail);
   }
 
-  // Symmetrical 2x3 Button Matrix
+  // Row 1: Core playback & Volume Controls (5 buttons max)
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('btn_pause_resume')
@@ -158,12 +162,23 @@ function buildMusicCard(song, isPaused = false, queueLength = 0, loopQueue = fal
       .setEmoji('⏭️')
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
+      .setCustomId('btn_vol_down')
+      .setLabel('-15%')
+      .setEmoji('🔉')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('btn_vol_up')
+      .setLabel('+15%')
+      .setEmoji('🔊')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
       .setCustomId('btn_stop')
       .setLabel('Stop')
       .setEmoji('⏹️')
       .setStyle(ButtonStyle.Danger)
   );
 
+  // Row 2: Modes & Queue Manager (4 buttons max)
   const row2 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('btn_loop_queue')
@@ -179,6 +194,11 @@ function buildMusicCard(song, isPaused = false, queueLength = 0, loopQueue = fal
       .setCustomId('btn_queue')
       .setLabel('Antrean')
       .setEmoji('📜')
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('btn_clear_queue')
+      .setLabel('Clear Queue')
+      .setEmoji('🗑️')
       .setStyle(ButtonStyle.Secondary)
   );
 
@@ -191,7 +211,7 @@ async function repostPlayerCardAtBottom(serverQueue, channel) {
   if (!targetChannel) return;
 
   const isPaused = serverQueue.player.state.status === AudioPlayerStatus.Paused || serverQueue.player.state.status === AudioPlayerStatus.AutoPaused;
-  const payload = buildMusicCard(serverQueue.current, isPaused, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
+  const payload = buildMusicCard(serverQueue.current, isPaused, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio, serverQueue.volume);
 
   if (serverQueue.message) {
     try {
@@ -204,10 +224,10 @@ async function repostPlayerCardAtBottom(serverQueue, channel) {
     serverQueue.message = await targetChannel.send(payload).catch(() => null);
   } catch (e) {}
 }
+
 async function startLofiRadio(serverQueue, textChannel) {
   serverQueue.isRadio = true;
   try {
-    // Dynamically resolve active live stream
     const liveData = await searchSongWithYtDlp(DYNAMIC_LOFI_QUERY);
     const streamUrl = liveData?.url || "https://www.youtube.com/watch?v=rFZHOHl-L8A";
 
@@ -228,8 +248,11 @@ async function startLofiRadio(serverQueue, textChannel) {
     serverQueue.currentProcess = audioStreamHandle;
 
     const resource = createAudioResource(audioStreamHandle.stream, {
-      inputType: StreamType.Raw
+      inputType: StreamType.Raw,
+      inlineVolume: true
     });
+    if (resource.volume) resource.volume.setVolume(serverQueue.volume);
+    serverQueue.currentResource = resource;
 
     serverQueue.player.play(resource);
     await repostPlayerCardAtBottom(serverQueue, textChannel || serverQueue.lastTextChannel);
@@ -255,8 +278,8 @@ async function playNext(guildId, textChannel) {
 
   if (serverQueue.queue.length === 0) {
     serverQueue.current = null;
+    serverQueue.currentResource = null;
 
-    // Auto-transition to 24/7 Lofi Radio if enabled
     if (serverQueue.mode247) {
       return startLofiRadio(serverQueue, serverQueue.lastTextChannel);
     }
@@ -271,6 +294,7 @@ async function playNext(guildId, textChannel) {
     if (serverQueue.lastTextChannel) serverQueue.lastTextChannel.send({ embeds: [idleEmbed] }).catch(() => {});
     return;
   }
+
   serverQueue.isRadio = false;
   const song = serverQueue.queue.shift();
   serverQueue.current = song;
@@ -280,8 +304,11 @@ async function playNext(guildId, textChannel) {
     serverQueue.currentProcess = audioStreamHandle;
 
     const resource = createAudioResource(audioStreamHandle.stream, {
-      inputType: StreamType.Raw
+      inputType: StreamType.Raw,
+      inlineVolume: true
     });
+    if (resource.volume) resource.volume.setVolume(serverQueue.volume);
+    serverQueue.currentResource = resource;
 
     serverQueue.player.play(resource);
     await repostPlayerCardAtBottom(serverQueue, serverQueue.lastTextChannel);
@@ -356,8 +383,6 @@ async function handleSingleCommand(parsedLine, message, serverQueue, voiceChanne
 client.on('messageCreate', async (message) => {
   if (message.author.bot || !message.guild) return;
 
-  console.log(`[USER-CMD] #${message.channel.name}: "${message.content}" from ${message.author.tag}`);
-
   const serverQueue = getOrCreateQueue(message.guild.id);
   serverQueue.lastTextChannel = message.channel;
 
@@ -410,6 +435,14 @@ client.on('messageCreate', async (message) => {
       cmd = 'loop';
     } else if (line.toLowerCase() === '24/7' || line.toLowerCase() === 'lofi' || line.toLowerCase() === '!lofi' || line.toLowerCase() === '!24/7') {
       cmd = '24/7';
+    } else if (line.toLowerCase().startsWith('volume ') || line.toLowerCase().startsWith('vol ') || line.toLowerCase().startsWith('!vol ') || line.toLowerCase().startsWith('!volume ')) {
+      cmd = 'volume';
+      queryArgs = line.slice(line.indexOf(' ') + 1).trim().split(/ +/);
+    } else if (line.toLowerCase() === 'clear' || line.toLowerCase() === '!clear' || line.toLowerCase() === 'clear queue' || line.toLowerCase() === '!clearqueue') {
+      cmd = 'clear';
+    } else if (line.toLowerCase().startsWith('remove ') || line.toLowerCase().startsWith('!remove ') || line.toLowerCase().startsWith('hapus ') || line.toLowerCase().startsWith('!rm ')) {
+      cmd = 'remove';
+      queryArgs = line.slice(line.indexOf(' ') + 1).trim().split(/ +/);
     } else {
       isNext = false;
       cmd = 'play';
@@ -436,23 +469,16 @@ client.on('messageCreate', async (message) => {
   }
 
   if (playCommands.length > 0) {
-    // 1. Check message.member.voice.channel
     let voiceChannel = message.member?.voice?.channel;
-
-    // 2. If message is sent in a voice channel text chat (channel.type === 2), that IS the voice channel!
     if (!voiceChannel && message.channel.type === ChannelType.GuildVoice) {
       voiceChannel = message.channel;
     }
-
-    // 3. Fallback: inspect guild voiceStates cache
     if (!voiceChannel) {
       const vs = message.guild.voiceStates.cache.get(message.author.id);
       if (vs && vs.channelId) {
         voiceChannel = message.guild.channels.cache.get(vs.channelId);
       }
     }
-
-    // 4. Fallback: fetch member freshly from API
     if (!voiceChannel) {
       try {
         const fetchedMember = await message.guild.members.fetch(message.author.id);
@@ -517,6 +543,7 @@ client.on('messageCreate', async (message) => {
     }
   }
 
+  // Handle other commands
   for (const cmdItem of parsedCommands) {
     if (cmdItem.command === 'skip') {
       if (serverQueue && serverQueue.current) serverQueue.player.stop();
@@ -546,10 +573,50 @@ client.on('messageCreate', async (message) => {
     } else if (cmdItem.command === 'resume') {
       serverQueue.player.unpause();
       repostPlayerCardAtBottom(serverQueue, message.channel);
+    } else if (cmdItem.command === 'loop') {
+      serverQueue.loopQueue = !serverQueue.loopQueue;
+      repostPlayerCardAtBottom(serverQueue, message.channel);
+    } else if (cmdItem.command === '24/7') {
+      serverQueue.mode247 = !serverQueue.mode247;
+      if (serverQueue.mode247 && (!serverQueue.current || serverQueue.player.state.status === AudioPlayerStatus.Idle)) {
+        startLofiRadio(serverQueue, message.channel);
+      } else {
+        repostPlayerCardAtBottom(serverQueue, message.channel);
+      }
+    } else if (cmdItem.command === 'volume') {
+      const volNum = parseInt(cmdItem.args[0], 10);
+      if (!isNaN(volNum) && volNum >= 0 && volNum <= 200) {
+        serverQueue.volume = volNum / 100;
+        if (serverQueue.currentResource && serverQueue.currentResource.volume) {
+          serverQueue.currentResource.volume.setVolume(serverQueue.volume);
+        }
+        repostPlayerCardAtBottom(serverQueue, message.channel);
+      }
+    } else if (cmdItem.command === 'clear') {
+      const removedCount = serverQueue.queue.length;
+      serverQueue.queue = [];
+      const clearEmbed = new EmbedBuilder()
+        .setColor(0x57F287)
+        .setDescription(`🗑️ **Antrean dibersihkan.** (${removedCount} lagu dihapus dari antrean).`);
+      message.reply({ embeds: [clearEmbed] });
+      repostPlayerCardAtBottom(serverQueue, message.channel);
+    } else if (cmdItem.command === 'remove') {
+      const targetIdx = parseInt(cmdItem.args[0], 10);
+      if (!isNaN(targetIdx) && targetIdx >= 1 && targetIdx <= serverQueue.queue.length) {
+        const removedSong = serverQueue.queue.splice(targetIdx - 1, 1)[0];
+        const rmEmbed = new EmbedBuilder()
+          .setColor(0x57F287)
+          .setDescription(`🗑️ Dihapus dari antrean: **[${removedSong.title}](${removedSong.url})**`);
+        message.reply({ embeds: [rmEmbed] });
+        repostPlayerCardAtBottom(serverQueue, message.channel);
+      } else {
+        message.reply(`❌ Masukkan nomor antrean yang valid (1 s/d ${serverQueue.queue.length})!`);
+      }
     }
   }
 });
 
+// Button interactions
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isButton()) return;
   const serverQueue = musicQueues.get(interaction.guildId);
@@ -563,13 +630,13 @@ client.on('interactionCreate', async (interaction) => {
     if (isCurrentlyPaused) {
       serverQueue.player.unpause();
       if (serverQueue.current) {
-        const updatedPayload = buildMusicCard(serverQueue.current, false, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
+        const updatedPayload = buildMusicCard(serverQueue.current, false, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio, serverQueue.volume);
         return interaction.update(updatedPayload).catch(() => {});
       }
     } else {
       serverQueue.player.pause();
       if (serverQueue.current) {
-        const updatedPayload = buildMusicCard(serverQueue.current, true, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
+        const updatedPayload = buildMusicCard(serverQueue.current, true, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio, serverQueue.volume);
         return interaction.update(updatedPayload).catch(() => {});
       }
     }
@@ -577,11 +644,33 @@ client.on('interactionCreate', async (interaction) => {
   } else if (interaction.customId === 'btn_skip') {
     serverQueue.player.stop();
     return interaction.deferUpdate().catch(() => {});
+  } else if (interaction.customId === 'btn_vol_down') {
+    serverQueue.volume = Math.max(0, Math.round((serverQueue.volume - 0.15) * 100) / 100);
+    if (serverQueue.currentResource && serverQueue.currentResource.volume) {
+      serverQueue.currentResource.volume.setVolume(serverQueue.volume);
+    }
+    if (serverQueue.current) {
+      const isPaused = serverQueue.player.state.status === AudioPlayerStatus.Paused || serverQueue.player.state.status === AudioPlayerStatus.AutoPaused;
+      const updatedPayload = buildMusicCard(serverQueue.current, isPaused, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio, serverQueue.volume);
+      return interaction.update(updatedPayload).catch(() => {});
+    }
+    return interaction.deferUpdate().catch(() => {});
+  } else if (interaction.customId === 'btn_vol_up') {
+    serverQueue.volume = Math.min(2.0, Math.round((serverQueue.volume + 0.15) * 100) / 100);
+    if (serverQueue.currentResource && serverQueue.currentResource.volume) {
+      serverQueue.currentResource.volume.setVolume(serverQueue.volume);
+    }
+    if (serverQueue.current) {
+      const isPaused = serverQueue.player.state.status === AudioPlayerStatus.Paused || serverQueue.player.state.status === AudioPlayerStatus.AutoPaused;
+      const updatedPayload = buildMusicCard(serverQueue.current, isPaused, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio, serverQueue.volume);
+      return interaction.update(updatedPayload).catch(() => {});
+    }
+    return interaction.deferUpdate().catch(() => {});
   } else if (interaction.customId === 'btn_loop_queue') {
     serverQueue.loopQueue = !serverQueue.loopQueue;
     if (serverQueue.current) {
       const isPaused = serverQueue.player.state.status === AudioPlayerStatus.Paused || serverQueue.player.state.status === AudioPlayerStatus.AutoPaused;
-      const updatedPayload = buildMusicCard(serverQueue.current, isPaused, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
+      const updatedPayload = buildMusicCard(serverQueue.current, isPaused, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio, serverQueue.volume);
       return interaction.update(updatedPayload).catch(() => {});
     }
     return interaction.deferUpdate().catch(() => {});
@@ -592,8 +681,21 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.deferUpdate().catch(() => {});
     } else if (serverQueue.current) {
       const isPaused = serverQueue.player.state.status === AudioPlayerStatus.Paused || serverQueue.player.state.status === AudioPlayerStatus.AutoPaused;
-      const updatedPayload = buildMusicCard(serverQueue.current, isPaused, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio);
+      const updatedPayload = buildMusicCard(serverQueue.current, isPaused, serverQueue.queue.length, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio, serverQueue.volume);
       return interaction.update(updatedPayload).catch(() => {});
+    }
+    return interaction.deferUpdate().catch(() => {});
+  } else if (interaction.customId === 'btn_clear_queue') {
+    const count = serverQueue.queue.length;
+    serverQueue.queue = [];
+    if (serverQueue.current) {
+      const isPaused = serverQueue.player.state.status === AudioPlayerStatus.Paused || serverQueue.player.state.status === AudioPlayerStatus.AutoPaused;
+      const updatedPayload = buildMusicCard(serverQueue.current, isPaused, 0, serverQueue.loopQueue, serverQueue.mode247, serverQueue.isRadio, serverQueue.volume);
+      await interaction.update(updatedPayload).catch(() => {});
+      if (serverQueue.lastTextChannel) {
+        serverQueue.lastTextChannel.send(`🗑️ **Antrean dibersihkan.** (${count} lagu dihapus).`).catch(() => {});
+      }
+      return;
     }
     return interaction.deferUpdate().catch(() => {});
   } else if (interaction.customId === 'btn_stop') {
@@ -623,14 +725,17 @@ client.on('interactionCreate', async (interaction) => {
     if (serverQueue.queue.length === 0) {
       qStr += "*(Kosong)*";
     } else {
-      qStr += serverQueue.queue.map((s, i) => `\`${i + 1}.\` ${s.title}`).slice(0, 5).join('\n');
+      qStr += serverQueue.queue.map((s, i) => `\`${i + 1}.\` ${s.title}`).slice(0, 10).join('\n');
+      if (serverQueue.queue.length > 10) {
+        qStr += `\n*...dan ${serverQueue.queue.length - 10} lagu lainnya.*`;
+      }
     }
     return interaction.reply({ content: qStr, flags: 64 });
   }
 });
 
 client.once('ready', () => {
-  console.log(`🎶 Diva Music Bot (Always Listen) aktif sebagai ${client.user.tag}!`);
+  console.log(`🎶 Diva Music Bot (Volume & Queue Manager) aktif sebagai ${client.user.tag}!`);
 });
 
 client.login(TOKEN);
