@@ -357,6 +357,8 @@ function initMusicEngine(discordClient) {
   discordClient.on('messageCreate', async (message) => {
     if (message.author.bot || !message.guild) return;
 
+    console.log(`[MUSIC-CORE] Received in #${message.channel.name || message.channel.id} by ${message.author.tag}: "${message.content}"`);
+
     const serverQueue = getOrCreateQueue(message.guild.id);
     serverQueue.lastTextChannel = message.channel;
 
@@ -364,7 +366,10 @@ function initMusicEngine(discordClient) {
       message.channel.type === ChannelType.GuildVoice ||
       message.channel.name?.includes('bot') ||
       message.channel.name?.includes('music') ||
-      message.channel.name?.includes('lagu');
+      message.channel.name?.includes('lagu') ||
+      message.channel.name?.includes('lounge') ||
+      message.channel.name?.includes('chill') ||
+      message.channel.name?.includes('room');
 
     const lines = message.content.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     const parsedCommands = [];
@@ -372,7 +377,6 @@ function initMusicEngine(discordClient) {
     for (const rawLine of lines) {
       let line = rawLine.replace(/<[@#][!&]?\d+>/g, '').trim();
       if (!line) continue;
-
       let isNext = false;
       let cmd = null;
       let queryArgs = [];
