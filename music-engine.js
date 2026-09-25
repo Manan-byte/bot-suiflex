@@ -446,7 +446,7 @@ function initMusicEngine(discordClient) {
     }
 
     if (playCommands.length > 0) {
-      let voiceChannel = message.member.voice?.channel;
+      let voiceChannel = message.member?.voice?.channel;
       if (!voiceChannel && message.channel.type === ChannelType.GuildVoice) {
         voiceChannel = message.channel;
       }
@@ -455,6 +455,14 @@ function initMusicEngine(discordClient) {
         if (vs && vs.channelId) {
           voiceChannel = message.guild.channels.cache.get(vs.channelId);
         }
+      }
+      if (!voiceChannel) {
+        try {
+          const fetchedMember = await message.guild.members.fetch(message.author.id);
+          if (fetchedMember.voice && fetchedMember.voice.channelId) {
+            voiceChannel = message.guild.channels.cache.get(fetchedMember.voice.channelId);
+          }
+        } catch (e) {}
       }
 
       if (!voiceChannel) {
