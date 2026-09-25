@@ -12,239 +12,25 @@
 
 const WebSocket = require("ws");
 const http = require("http");
-const play = require("play-dl");
-const {
-  joinVoiceChannel,
-  createAudioPlayer,
-  createAudioResource,
-  AudioPlayerStatus,
-  VoiceConnectionStatus,
-  entersState
-} = require("@discordjs/voice");
+const https = require("https");
 // Configuration
 const TOKEN = process.env.DISCORD_TOKEN || Buffer.from("TVRVMU1qTXdNamt5TURreE1qQTRNRGt5TncuR29zcUlFLlFQZjU5WjQyY0NULXVWcFVIVU1DV0Y3T1VZUnZhak11NTZfNkZV", "base64").toString("utf-8");
 const SUIFLEX_GUILD_ID = "1523983495339311175";
 const MEMBER_ROLE_ID = "1540264873005420554"; // 👥 Member
 const WELCOME_CHANNEL_ID = "1540276644143566938"; // #🚀welcome
-const AUDIT_LOG_CHANNEL_ID = "1552316795715715104"; // #🤖-mod-logs (Staff Only)
+const AUDIT_LOG_CHANNEL_ID = "1552721481895776336"; // #🤖-mod-logs (Staff Only)
 const BOT_START_TIME = Date.now();
 const PORT = process.env.PORT || 3000;
 
-// Voice States & Music Player Management
-const userVoiceStates = new Map(); // userId -> channelId
-let activeVoiceConnection = null;
-let activeAudioPlayer = null;
-let currentTrack = null;
-let activeVoiceAdapter = null;
-let isMusicLooping = false;
-let isMusicPaused = false;
-
-function createDiscordWsVoiceAdapter() {
-  return (methods) => {
-    activeVoiceAdapter = {
-      onVoiceServerUpdate: (data) => methods.onVoiceServerUpdate(data),
-      onVoiceStateUpdate: (data) => methods.onVoiceStateUpdate(data)
-    };
-    return {
-      sendPayload(payload) {
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify(payload));
-          return true;
-        }
-        return false;
-      },
-      destroy() {
-        activeVoiceAdapter = null;
-      }
-    };
-  };
-}
-
-async function searchMusicTrack(query) {
-  const cleanQ = query.trim();
-
-  // Strategy 1: Apple iTunes API (Extremely accurate artist & song matching, clean direct AAC audio stream)
-  try {
-    const res = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(cleanQ)}&entity=song&limit=5`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.results && data.results.length > 0) {
-        // Pick best matching track with preview
-        const track = data.results.find(t => t.previewUrl) || data.results[0];
-        if (track && track.previewUrl) {
-          return {
-            title: track.trackName,
-            artist: track.artistName,
-            duration: `${Math.floor(track.trackTimeMillis / 60000)}:${Math.floor((track.trackTimeMillis % 60000) / 1000).toString().padStart(2, "0")}`,
-            url: track.trackViewUrl,
-            streamUrl: track.previewUrl,
-            cover: track.artworkUrl100?.replace("100x100bb", "600x600bb") || track.artworkUrl100,
-            source: "Apple Music"
-          };
-        }
-      }
-    }
-  } catch (err) {
-    console.error("[Music Search iTunes Error]:", err.message);
-  }
-
-  // Strategy 2: Deezer Audio API (High-Fidelity MP3 CDN)
-  try {
-    const res = await fetch(`https://api.deezer.com/search?q=${encodeURIComponent(cleanQ)}&limit=5`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.data && data.data.length > 0) {
-        const track = data.data.find(t => t.preview) || data.data[0];
-        if (track && track.preview) {
-          return {
-            title: track.title,
-            artist: track.artist?.name || "Various Artists",
-            duration: `${Math.floor(track.duration / 60)}:${(track.duration % 60).toString().padStart(2, "0")}`,
-            url: track.link,
-            streamUrl: track.preview,
-            cover: track.album?.cover_big || track.album?.cover_medium,
-            source: "Deezer HD"
-          };
-        }
-      }
-    }
-  } catch (err) {
-    console.error("[Music Search Deezer Error]:", err.message);
-  }
-
-  // Strategy 3: YouTube Search via play-dl fallback
-  try {
-    const searchResults = await play.search(query, { limit: 1 });
-    if (searchResults && searchResults.length > 0) {
-      const yt = searchResults[0];
-      return {
-        title: yt.title,
-        artist: yt.channel?.name || "YouTube",
-        duration: yt.durationRaw || "Live",
-        url: yt.url,
-        streamUrl: null, // YouTube raw streams are blocked by bot-detection
-        cover: yt.thumbnails?.[0]?.url,
-        source: "YouTube"
-      };
-    }
-  } catch (_) {}
-
-  return null;
-}
-
-async function playMusic(query, voiceChannelId, textChannelId, replyMsgId, requestedBy = "Member") {
-  try {
-    await sendTyping(textChannelId);
-
-    // 1. Resolve song via multi-source engine
-    const song = await searchMusicTrack(query);
-    if (!song) {
-      return await sendSmartMessage(textChannelId, `❌ Maaf, lagu dengan judul \`${query}\` tidak ditemukan. Coba judul lagu atau nama penyanyi lain ya!`, replyMsgId);
-    }
-    // 2. Connect to voice channel using @discordjs/voice (or reuse existing connection)
-    let connection = activeVoiceConnection;
-    if (!connection || connection.state.status === VoiceConnectionStatus.Destroyed) {
-      connection = joinVoiceChannel({
-        channelId: voiceChannelId,
-        guildId: SUIFLEX_GUILD_ID,
-        adapterCreator: createDiscordWsVoiceAdapter(),
-        selfDeaf: false,
-        selfMute: false
-      });
-      activeVoiceConnection = connection;
-    }
-
-    // CRITICAL: Wait for UDP voice handshake to be 100% READY before playing audio!
-    try {
-      console.log(`[VoiceConnection] Waiting for voice UDP connection ready in ${voiceChannelId}...`);
-      await entersState(connection, VoiceConnectionStatus.Ready, 15000);
-      console.log(`[VoiceConnection] Handshake completed! Ready to transmit packets.`);
-    } catch (conErr) {
-      console.error("[VoiceConnection Handshake Failed]:", conErr.message);
-    }
-
-    // 3. Create audio resource from verified streamable source
-    let resource;
-    if (song.streamUrl) {
-      resource = createAudioResource(song.streamUrl, {
-        inlineVolume: true
-      });
-      if (resource.volume) resource.volume.setVolume(1.0);
-    } else {
-      const fallbackUrl = "https://cdnt-preview.dzcdn.net/api/1/1/9/7/7/0/977625c9319d9d63d8f7a184d2e31e01.mp3";
-      resource = createAudioResource(fallbackUrl, { inlineVolume: true });
-      if (resource.volume) resource.volume.setVolume(1.0);
-    }
-
-    // 4. Create and attach player with subscription
-    if (!activeAudioPlayer) {
-      activeAudioPlayer = createAudioPlayer();
-      activeAudioPlayer.on("error", (err) => console.error("[AudioPlayer Error]", err.message));
-      activeAudioPlayer.on(AudioPlayerStatus.Playing, () => console.log("[AudioPlayer] Transmitting live audio to voice channel!"));
-      activeAudioPlayer.on(AudioPlayerStatus.Idle, () => {
-        if (isMusicLooping && currentTrack && currentTrack.streamUrl) {
-          const replayResource = createAudioResource(currentTrack.streamUrl, { inlineVolume: true });
-          if (replayResource.volume) replayResource.volume.setVolume(1.0);
-          activeAudioPlayer.play(replayResource);
-        }
-      });
-    }
-
-    activeAudioPlayer.play(resource);
-    connection.subscribe(activeAudioPlayer);
-    currentTrack = song;
-    isMusicPaused = false;
-
-    // 5. Send rich Now Playing embed (Matching user's screenshot exactly!)
-    const musicEmbed = {
-      author: { name: "Now Playing" },
-      title: song.title,
-      url: song.url,
-      description: `**Duration:** \`${song.duration}\`\n**Requested by:** ${requestedBy}`,
-      color: 0xE91E63, // Signature pink/magenta accent line matching user's screenshot
-      thumbnail: { url: song.cover || "https://cdn.discordapp.com/embed/avatars/0.png" },
-      footer: { text: "Suiflex High-Fidelity Music Engine" }
-    };
-
-    await discordApi(`/channels/${textChannelId}/messages`, {
-      method: "POST",
-      body: JSON.stringify({
-        embeds: [musicEmbed],
-        message_reference: replyMsgId ? { message_id: replyMsgId } : undefined,
-        components: [
-          {
-            type: 1,
-            components: [
-              { type: 2, style: 2, custom_id: "music_pause", label: "Pause", emoji: { name: "⏸️" } },
-              { type: 2, style: 2, custom_id: "music_skip", label: "Skip", emoji: { name: "⏭️" } },
-              { type: 2, style: 2, custom_id: "music_stop", label: "Stop", emoji: { name: "⏹️" } },
-              { type: 2, style: 2, custom_id: "music_loop", label: "Loop", emoji: { name: "🔁" } }
-            ]
-          },
-          {
-            type: 1,
-            components: [
-              { type: 2, style: 2, custom_id: "music_like", label: "Like", emoji: { name: "❤️" } },
-              { type: 2, style: 5, label: "Listen", url: song.url }
-            ]
-          }
-        ]
-      })
-    });
-  } catch (err) {
-    console.error("[Music Player Error]:", err.message);
-    await sendSmartMessage(textChannelId, `⚠️ Terjadi kendala saat memutar audio: \`${err.message}\`. Pastikan bot memiliki izin connect di voice channel tersebut.`, replyMsgId);
-  }
-}
 // Repository to Channel Mapping for GitHub Live Sync
 const REPO_CHANNEL_ROUTING = {
-  "arsy-code": "1550524951662960792",    // #🚨arsy-code-update
-  "forgeguard": "1543811778348318771",   // #🚨forgeguard-update
-  "rdb": "1543811857100443818",          // #🚨rdb-update
-  "suitest": "1543811927975919636",      // #🚨suitest-update
-  "note": "1543865770755362886",         // #🚨companion-update
-  "companion": "1543865770755362886",    // #🚨companion-update
-  "default": "1523983497860219034"       // #📢service-updates
+  "arsy-code": "1552721474396229742",    // #🚨arsy-code-update
+  "forgeguard": "1552721424630816829",   // #🚨forgeguard-update
+  "rdb": "1552721432914567269",          // #🚨rdb-update
+  "suitest": "1552721439050834020",      // #🚨suitest-update
+  "note": "1552721446604644383",         // #🚨companion-update
+  "companion": "1552721446604644383",    // #🚨companion-update
+  "default": "1552721418318258176"       // #📢service-updates
 };
 
 // 10 Suiflex Modules Complete Knowledge Base
@@ -268,10 +54,10 @@ const SUIFLEX_MODULES = {
   "suitest": {
     name: "Suitest",
     category: "QA & Engineering Verification",
-    desc: "Self-hostable, MCP-native QA platform for agent-driven automated testing and artifact persistence with cross-framework support.",
+    desc: "Free, open-source, self-hostable & MCP-native software testing platform. Replaces spreadsheets with unified test case management, browser/API/DB automated runners, video evidence capture, and BYOL AI integration.",
     install: "brew install suiflex/tap/suitest-cli",
     url: "https://github.com/suiflex/suitest",
-    commands: ["suitest run", "suitest init", "suitest report"]
+    commands: ["suitest run", "suitest init", "suitest report", "suitest serve"]
   },
   "rdb": {
     name: "rdb",
@@ -801,9 +587,8 @@ function parsePollFromText(text) {
   const isPoll = lower.includes("poll") || lower.includes("polling") || lower.includes("voting") || lower.includes("vote") || lower.includes("jajak pendapat");
   if (!isPoll) return null;
 
-  // Strip poll trigger words
-  let clean = q.replace(/^(?:tolong\s+|coba\s+|bisa\s+)?(?:buatkan\s+|buat\s+kan\s+|bikin\s+|buat\s+)?(?:polling|poll|voting|vote|jajak pendapat)\s*:?\s*/i, "").trim();
-
+  // Strip poll trigger words (supports English & Indonesian: poll, create poll, buatkan poll, vote, voting, etc.)
+  let clean = q.replace(/^(?:please\s+|tolong\s+|coba\s+|bisa\s+)?(?:create\s+a\s+|create\s+|make\s+a\s+|make\s+|buatkan\s+|buat\s+kan\s+|bikin\s+|buat\s+)?(?:polling|poll|voting|vote|jajak pendapat)\s*:?\s*/i, "").trim();
   let question = "";
   let options = [];
 
@@ -868,14 +653,20 @@ function extractImagePrompt(text) {
   }
 
   const imageTriggers = [
+    // Indonesian triggers
     "buatkan gambar", "buat kan gambar", "bikin gambar", "bikin kan gambar",
-    "gambarkan", "generate gambar", "buat gambar", "generate image",
-    "lukiskan", "foto "
+    "gambarkan", "generate gambar", "buat gambar", "lukiskan", "foto ",
+    // English triggers
+    "generate image", "create image", "generate picture", "draw",
+    "paint", "illustrate", "render image", "generate art", "create art"
   ];
 
-  const matched = imageTriggers.find(t => q.includes(t)) || (q.startsWith("gambar ") && !q.includes(" apa ") && !q.includes(" siapa "));
+  const isExplicitEnglishWord = q.startsWith("draw ") || q.startsWith("paint ") || q.startsWith("render ") || q.startsWith("illustrate ");
+  const isExplicitIndoWord = (q.startsWith("gambar ") && !q.includes(" apa ") && !q.includes(" siapa ")) || q.startsWith("lukiskan ");
+
+  const matched = imageTriggers.find(t => q.includes(t)) || isExplicitEnglishWord || isExplicitIndoWord;
   if (matched) {
-    const regex = new RegExp(`(?:tolong\\s+|coba\\s+|bisa\\s+)?(?:${imageTriggers.join("|")}|gambar\\s+)\\s*:?\\s*`, "i");
+    const regex = new RegExp(`(?:please\\s+|tolong\\s+|coba\\s+|bisa\\s+)?(?:${imageTriggers.join("|")}|gambar\\s+|draw\\s+|paint\\s+|render\\s+|illustrate\\s+)\\s*:?\\s*`, "i");
     const prompt = text.replace(regex, "").trim();
     return prompt || "futuristic digital art";
   }
@@ -888,11 +679,11 @@ Pengguna sedang me-reply pesan gambar yang sebelumnya di-generate dengan prompt:
 Isi pesan reply pengguna: "${userReply}".
 
 Tentukan niat pengguna secara teliti:
-A. Jika pengguna MEMINTA DOKUMEN / PENJELASAN / TEKS / ARTIKEL seputar objek di gambar (misal: "buat doc nya", "bikin dokumennya", "jelaskan", "buatkan artikel", "deskripsikan", "tulis spesifikasinya"):
+A. Jika pengguna MEMINTA DOKUMEN / PENJELASAN / TEKS / ARTIKEL seputar objek di gambar (misal: "buat doc nya", "make doc", "create doc", "generate doc", "document this", "bikin dokumennya", "jelaskan", "buatkan artikel", "deskripsikan", "tulis spesifikasinya"):
    Tuliskan HANYA baris perintah dengan format:
    CREATE_DOC: <topik atau judul dokumen berdasarkan objek di gambar>
 
-B. Jika pengguna MEMINTA REVISI / MODIFIKASI / MENGUBAH GAMBAR (misal: "ganti jadi anjing", "tambah sayap", "buat versi malam", "bikin anjingnya", "ubah warna", "rubah gambar"):
+B. Jika pengguna MEMINTA REVISI / MODIFIKASI / MENGUBAH GAMBAR (misal: "ganti jadi anjing", "change to dog", "turn into night", "change to night", "add wings", "make it night", "tambah sayap", "buat versi malam", "bikin anjingnya", "ubah warna", "rubah gambar"):
    Tuliskan HANYA baris perintah dengan format:
    GENERATE_IMAGE: <prompt bahasa inggris yang sudah disintesis bersih dan siap digenerate>
 
@@ -922,11 +713,58 @@ Jawab sekarang:
   }
   return `Halo! Gambar di atas adalah hasil generate AI dengan deskripsi awal: "${originalPrompt}". Jika ingin membuat gambar baru atau mengubahnya, silakan sebutkan instruksi perubahannya ya!`;
 }
+// Live GitHub README Cache to inject authoritative repo facts dynamically
+const githubReadmeCache = new Map();
+const GITHUB_REPO_MAP = {
+  "suitest": "suitest",
+  "rdb": "rdb",
+  "forgeguard": "ForgeGuard",
+  "arsy-code": "arsy-code",
+  "websift": "websift",
+  "safehell": "SafeHell",
+  "companion": "companion",
+  "note": "companion",
+  "kurir": "kurir",
+  "fluxguard": "FluxGuard",
+  "guardener": "Guardener"
+};
+
+async function fetchGitHubReadmeSnippet(repoName) {
+  if (githubReadmeCache.has(repoName)) {
+    return githubReadmeCache.get(repoName);
+  }
+  try {
+    const res = await fetch(`https://api.github.com/repos/suiflex/${repoName}/readme`, {
+      headers: {
+        "User-Agent": "Suiflex-Architect-Bot",
+        Accept: "application/vnd.github.raw+json"
+      }
+    });
+    if (res.ok) {
+      const rawText = await res.text();
+      // Keep up to 2500 chars of pristine markdown from GitHub
+      const cleanSnippet = rawText.slice(0, 2500).replace(/\r\n/g, "\n");
+      githubReadmeCache.set(repoName, cleanSnippet);
+      return cleanSnippet;
+    }
+  } catch (_) {}
+  return "";
+}
+
 async function queryGeminiAi(userQuestion, authorId, channelId, contextReply = "") {
   const channelScope = CHANNEL_MODULE_SCOPE[channelId];
   let channelContextDesc = "Channel umum (#💬-suiflex-general). Anda bebas menjawab seputar seluruh ekosistem Suiflex 10 modul.";
+  let liveRepoContext = "";
+
   if (channelScope) {
     channelContextDesc = `Channel khusus kategori ${channelScope.name} (Modul ID: ${channelScope.mod}). DISKUSI DI SINI HANYA UNTUK ${channelScope.name}. JIKA PENGGUNA BERTANYA TENTANG MODUL LAIN, TOLAK DENGAN SANTUN DAN ARAHKAN KE CHANNEL MODUL YANG BERSANGKUTAN. JANGAN JELASKAN MODUL LAIN TERSEBUT DI SINI.`;
+    const repoSlug = GITHUB_REPO_MAP[channelScope.mod];
+    if (repoSlug) {
+      const readmeSnippet = await fetchGitHubReadmeSnippet(repoSlug);
+      if (readmeSnippet) {
+        liveRepoContext = `\n\n--- DOKUMEN RESMI LANGSUNG DARI GITHUB REPO (suiflex/${repoSlug}/README.md) ---\n${readmeSnippet}\n--------------------------------------------------------------\nGUNAKAN DATA TEKNIS RESMI DI ATAS UNTUK MENJAWAB PERTANYAAN SECARA AKURAT, MENDALAM, DAN DETAIL!\n`;
+      }
+    }
   }
 
   // Fast-path: Check if user is asking to tag/mention someone
@@ -947,6 +785,7 @@ async function queryGeminiAi(userQuestion, authorId, channelId, contextReply = "
   const systemPrompt = `
 Kamu adalah Architect, asisten AI resmi komunitas open-source Suiflex Open Engineering (https://www.suiflex.dev).
 Gaya bicaramu: ramah, santun, cerdas, presisi, mendalam, dan natural tanpa kartu template kaku.
+${liveRepoContext}
 
 Pengetahuan Lengkap 10 Modul Resmi Suiflex (Sumber Langsung: https://github.com/suiflex):
 1. Arsy Code (https://github.com/suiflex/arsy-code | Channel: <#1540272970608541746>):
@@ -968,10 +807,17 @@ Pengetahuan Lengkap 10 Modul Resmi Suiflex (Sumber Langsung: https://github.com/
    - CLI: \`brew install suiflex/tap/rdb\` (perintah: \`rdb connect <uri>\`, \`rdb query <sql>\`, \`rdb schema\`).
 
 4. Suitest (https://github.com/suiflex/suitest | Channel: <#1540273774786514944>):
-   - Deskripsi: Automated QA testing platform that works for everyone. Free, self-hostable & MCP-native platform.
-   - Fitur Inti: Otomasi pengujian E2E dan unit test berbasis AI agent, validasi regresi otomatis, dan persistence artefak laporan pengujian.
-   - CLI: \`brew install suiflex/tap/suitest-cli\` (perintah: \`suitest run\`, \`suitest init\`, \`suitest report\`).
-
+   - Deskripsi: Free, open-source, self-hostable & Model Context Protocol (MCP)-native automated QA software testing platform.
+   - Arsitektur Repositori:
+     * Python (managed via \`uv\`): Powers \`apps/api\`, \`apps/runner\`, and packages (\`agent\`, \`core\`, \`db\`, \`mcp\`, \`shared\`, \`lifecycle\`).
+     * Node.js (managed via \`pnpm\`): Powers \`apps/web\` (Next.js/React frontend dashboard), \`packages/mcp-npx\`, and documentation (\`docs-site\`).
+   - Fitur Inti:
+     * Test Case Management: Buat, edit, dan kelola test suites terpadu menggantikan spreadsheet manual.
+     * Automated Runner: Otomasi pengujian browser, API, dan database dengan perekaman bukti screenshot & video MP4 deterministik.
+     * MCP-Native Testing: Server MCP pluggable yang memungkinkan AI coding agents mengeksekusi test run secara terprogram.
+     * Optional BYOL AI: Integrasi LLM bawaan sendiri untuk generate skenario tes otomatis dari dokumen PRD dan mendiagnosis bug.
+     * Traceability & Defect Tracking: Pencatatan bug otomatis ke Jira/GitHub dari test yang gagal.
+   - CLI: \`brew install suiflex/tap/suitest-cli\` (perintah: \`suitest run\`, \`suitest init\`, \`suitest report\`, \`suitest serve\`).
 5. Companion / Note (https://github.com/suiflex/companion & https://github.com/suiflex/note | Channel: <#1543867099460665395>):
    - Deskripsi: AI Meeting Assistant & Developer Notes.
    - Fitur Inti: Browser extension yang menangkap audio/caption Google Meet & Microsoft Teams dari DOM dan mengubahnya menjadi catatan teknis, ringkasan arsitektur, dan daftar tugas (action items) otomatis.
@@ -1013,7 +859,7 @@ ATURAN WAJIB & MUTLAK:
 3. JIKA PERTANYAAN NGACO / GIBBERISH / ACUR DI CHANNEL KATEGORI:
    - Tanggapi ramah bahwa kamu belum memahami maksudnya, dan sebutkan contoh hal yang dapat ditanyakan seputar modul channel tersebut.
 4. ATURAN REVISI / MERINGKAS DOKUMEN VIA REPLY:
-   - Jika pengguna me-reply pesan dokumen/teks dan meminta 'buat lebih pendek', 'ringkas', 'perpendek', 'bikin versi singkat', atau instruksi revisi:
+   - Jika pengguna me-reply pesan dokumen/teks dan meminta 'buat lebih pendek', 'make it shorter', 'summarize', 'shorten', 'ringkas', 'perpendek', 'bikin versi singkat', atau instruksi revisi:
    - KAMU DILARANG bertanya balik 'dokumen mana yang ingin diringkas'!
    - KAMU WAJIB LANGSUNG membuatkan versi ringkas/pendek dari dokumen yang ada di [Pesan Sebelumnya yang Di-Reply Pengguna] secara profesional, terstruktur, padat, dan to-the-point!
 5. ATURAN MEN-TAG / MEMANGGIL ANGGOTA:
@@ -1317,43 +1163,21 @@ function connect() {
           }
         }, interval);
 
-        // Identify: GUILDS (1) + GUILD_MEMBERS (2) + GUILD_VOICE_STATES (128) + GUILD_MESSAGES (512) + MESSAGE_CONTENT (32768)
+        // Identify: GUILDS (1) + GUILD_MEMBERS (2) + GUILD_MESSAGES (512) + MESSAGE_CONTENT (32768)
         ws.send(JSON.stringify({
           op: 2,
           d: {
             token: TOKEN,
-            intents: 1 | (1 << 1) | (1 << 7) | (1 << 9) | (1 << 15),
+            intents: 1 | (1 << 1) | (1 << 9) | (1 << 15),
             properties: { os: "linux", browser: "railway-cloud", device: "cloud" }
           }
         }));
       }
 
-      // Event: VOICE_STATE_UPDATE & VOICE_SERVER_UPDATE for Voice Gateway
-      if (data.t === "VOICE_STATE_UPDATE") {
-        const vs = data.d;
-        if (vs.guild_id === SUIFLEX_GUILD_ID && vs.user_id) {
-          if (vs.channel_id) {
-            userVoiceStates.set(vs.user_id, vs.channel_id);
-          } else {
-            userVoiceStates.delete(vs.user_id);
-          }
-        }
-      }
-
-      // Voice adapter event forwarding to @discordjs/voice
-      if (data.t === "VOICE_SERVER_UPDATE" || data.t === "VOICE_STATE_UPDATE") {
-        if (activeVoiceAdapter && activeVoiceAdapter.onVoiceServerUpdate) {
-          if (data.t === "VOICE_SERVER_UPDATE") activeVoiceAdapter.onVoiceServerUpdate(data.d);
-          if (data.t === "VOICE_STATE_UPDATE" && data.d.user_id === "1552302920912080927") {
-            activeVoiceAdapter.onVoiceStateUpdate(data.d);
-          }
-        }
-      }
-
       // Event: READY
       if (data.t === "READY") {
         console.log(`[Architect v3.0] READY! Logged in as ${data.d.user.username}#${data.d.user.discriminator}`);
-        console.log("[Architect v3.0] All 7 systems active: AutoRole, WelcomeCard, SlashCommands, GitHubSync, AiAssistant, AuditLogger, VoiceMusic.");
+        console.log("[Architect v3.0] All 6 systems active: AutoRole, WelcomeCard, SlashCommands, GitHubSync, AiAssistant, AuditLogger.");
       }
       // Event: GUILD_MEMBER_ADD (Auto-Role + Welcome Embed)
       if (data.t === "GUILD_MEMBER_ADD") {
@@ -1380,25 +1204,23 @@ function connect() {
               : "https://cdn.discordapp.com/embed/avatars/0.png";
 
             const welcomeEmbed = {
-              title: "🌟 Selamat Datang di Suiflex • Welcome to Suiflex!",
+              title: "Welcome to Suiflex Open Engineering!",
               description: [
-                `Halo <@${user.id}>, selamat bergabung di komunitas **Suiflex Open Engineering**!`,
-                `Welcome to the official community of **Suiflex Open Engineering**!`,
+                `Welcome <@${user.id}> to the official community of **Suiflex Open Engineering**!`,
                 "",
-                "**Panduan Cepat / Quick Guide:**",
-                "• 📜 Baca aturan & panduan fitur di <#1543809459099406426>",
-                "• ⚡ Cek daftar perintah bot di <#1552315070417997904>",
-                "• 🧭 Pelajari 10 modul rekayasa di <#1552315058414161940>",
-                "• 💬 Mulai obrolan & kenalkan diri di <#1540268259645857863>",
+                "**Quick Orientation Guide:**",
+                "• Official guidelines & interaction manual: <#1543809459099406426>",
+                "• Quick cheat sheet & commands roster: <#1552315070417997904>",
+                "• Explore the 10 engineering modules: <#1552315058414161940>",
+                "• Introduce yourself & meet fellow engineers: <#1540268259645857863>",
                 "",
-                "**Fitur Bot @Architect yang Siap Kamu Pakai:**",
-                "• 🎵 `@Architect play <lagu>` $\\rightarrow$ Putar musik langsung di voice room!",
-                "• 🎨 `@Architect gambar <ide>` $\\rightarrow$ Generate gambar AI resolusi HD Flux",
-                "• 📄 `@Architect buatkan dokumen <topik>` (atau reply gambar: `buat doc nya`)",
-                "• 📊 `@Architect buatkan poll Opsi 1 atau Opsi 2?` $\\rightarrow$ Voting interaktif",
-                "• 💡 Ketik `@Architect help` kapan saja untuk bantuan cepat!",
+                "**Available AI Features:**",
+                "• `@Architect gambar <concept>` $\\rightarrow$ High-definition AI image generator",
+                "• `@Architect buatkan dokumen <topic>` (or reply to any image with: `buat doc nya`)",
+                "• `@Architect buatkan poll Option 1 or Option 2?` $\\rightarrow$ Interactive community voting",
+                "• Type `@Architect help` anytime for instant assistance.",
                 "",
-                "✨ *Peran `👥 Member` telah disematkan secara otomatis ke akun Anda.*"
+                "The `👥 Member` role has been automatically assigned to your account."
               ].join("\n"),
               color: 0xF1C40F, // Suiflex Gold
               thumbnail: { url: avatarUrl },
@@ -1412,7 +1234,7 @@ function connect() {
             await discordApi(`/channels/${WELCOME_CHANNEL_ID}/messages`, {
               method: "POST",
               body: JSON.stringify({
-                content: `Selamat datang / Welcome <@${user.id}>! 👋`,
+                content: `Welcome <@${user.id}>! 👋`,
                 embeds: [welcomeEmbed],
                 components: [
                   {
@@ -1421,13 +1243,13 @@ function connect() {
                       {
                         type: 2,
                         style: 5,
-                        label: "🌐 Website Resmi (suiflex.dev)",
+                        label: "🌐 Official Website",
                         url: "https://www.suiflex.dev"
                       },
                       {
                         type: 2,
                         style: 5,
-                        label: "🐙 GitHub Suiflex",
+                        label: "🐙 GitHub Organization",
                         url: "https://github.com/suiflex"
                       }
                     ]
@@ -1531,13 +1353,12 @@ function connect() {
 
         if (isBotMentioned) {
           await sendTyping(msg.channel_id);
-
-          // Clean question text
+          // Clean question text and strip accidental leading punctuation and any mentions
           const cleanQuestion = (msg.content || "")
-            .replace(/<@!?1552302920912080927>/g, "")
-            .replace(/<@&1552307486613311610>/g, "")
+            .replace(/<@!?[0-9]+>/g, "")
+            .replace(/<@&[0-9]+>/g, "")
+            .replace(/^[|!/.,;:\-_~`'"\s]+/g, "")
             .trim();
-
           // 0. If replying to an image, treat it as an image modification / revision!
           // 0. If replying to an image, intelligently analyze whether it's a question or a revision!
           if (referencedImagePrompt) {
@@ -1569,37 +1390,6 @@ function connect() {
             }
             return;
           }
-          // Music Engine Routing (e.g. "play lofi", "putar lagu bohemian rhapsody", "stop music", "pause")
-          const cleanLower = cleanQuestion.toLowerCase();
-          const isPlayCommand = cleanLower.startsWith("play ") || cleanLower.startsWith("putar ") || cleanLower.startsWith("setelkan ") || cleanLower.startsWith("setel lagu ") || cleanLower.startsWith("mainkan ");
-          const isStopCommand = cleanLower === "stop" || cleanLower === "stop music" || cleanLower === "berhenti" || cleanLower === "leave";
-
-          if (isStopCommand) {
-            if (activeAudioPlayer) activeAudioPlayer.stop();
-            if (activeVoiceConnection) {
-              activeVoiceConnection.destroy();
-              activeVoiceConnection = null;
-            }
-            currentTrack = null;
-            await sendSmartMessage(msg.channel_id, "⏹️ Musik telah dihentikan dan bot telah meninggalkan voice room. Terima kasih!", msg.id, null, 0xE74C3C);
-            return;
-          }
-
-          if (isPlayCommand) {
-            const rawSongQuery = cleanQuestion.replace(/^(?:play|putar\s+lagu|putar|setelkan|setel\s+lagu|mainkan)\s+/i, "").trim();
-            const songQuery = rawSongQuery.replace(/^(?:music|musik|lagu)\s+/i, "").trim() || rawSongQuery;
-
-            const authorVoiceChannel = userVoiceStates.get(msg.author.id);
-            // Default to General Lounge if user not tracked yet in cache
-            const targetVoiceChannel = authorVoiceChannel || "1523983498342436895"; // 🔊 💬 General Lounge
-
-            if (!authorVoiceChannel) {
-              await sendSmartMessage(msg.channel_id, `ℹ️ Kamu belum terdeteksi berada di voice room. Bot akan otomatis bergabung dan memutar lagu di **<#1523983498342436895>** (General Lounge)! Silakan join ke sana ya 🎧`, msg.id);
-            }
-
-            await playMusic(songQuery, targetVoiceChannel, msg.channel_id, msg.id, `<@${msg.author.id}>`);
-            return;
-          }
 
           // A. Tag Intent (e.g. "tag enriko", "panggil wahyu", "mention matoa")
           const pureTagTriggers = ["tag ", "panggil ", "mention ", "tolong tag ", "tolong panggil ", "coba tag ", "bisa tag "];
@@ -1620,12 +1410,12 @@ function connect() {
             }
           }
 
-          // B. Poll Intent (e.g. "buatkan poll ...", "bikin polling ...", "poll: ... | ...")
+          // B. Poll Intent (Bilingual: English & Indonesian)
           const isPollRequest = cleanLower.startsWith("poll") || cleanLower.startsWith("polling") ||
+            cleanLower.startsWith("create poll") || cleanLower.startsWith("make poll") ||
             cleanLower.startsWith("buatkan poll") || cleanLower.startsWith("bikin poll") ||
             cleanLower.startsWith("buatkan polling") || cleanLower.startsWith("bikin polling") ||
-            cleanLower.startsWith("voting");
-
+            cleanLower.startsWith("voting") || cleanLower.startsWith("vote");
           if (isPollRequest) {
             const parsed = parsePollFromText(cleanQuestion);
             if (parsed) {
@@ -1657,17 +1447,21 @@ function connect() {
             return;
           }
 
-          // D. Document Creation Intent (e.g. "buatkan dokumen ...", "bikin doc ...")
+          // D. Document Creation Intent (Bilingual: English & Indonesian)
           const isDocRequest = cleanLower.startsWith("buatkan dokumen") ||
             cleanLower.startsWith("bikin dokumen") ||
             cleanLower.startsWith("buatkan doc") ||
-            cleanLower.startsWith("tuliskan dokumen");
+            cleanLower.startsWith("tuliskan dokumen") ||
+            cleanLower.startsWith("create document") ||
+            cleanLower.startsWith("create doc") ||
+            cleanLower.startsWith("make document") ||
+            cleanLower.startsWith("generate document") ||
+            cleanLower.startsWith("generate doc");
 
           if (isDocRequest) {
             const topic = cleanQuestion
-              .replace(/^(buatkan dokumen|bikin dokumen|buatkan doc|tuliskan dokumen)\s*/i, "")
+              .replace(/^(buatkan dokumen|bikin dokumen|buatkan doc|tuliskan dokumen|create document|create doc|make document|generate document|generate doc)\s*/i, "")
               .trim();
-
             const docPrompt = `Buatkan dokumen teknis profesional yang terstruktur lengkap dalam format Markdown mengenai topik: "${topic}". Dokumen harus mencakup: Judul, Pendahuluan, Arsitektur/Spesifikasi, Alur Kerja, Panduan Implementasi, dan Kesimpulan. Gunakan format bullet points vertikal yang rapi.`;
             const docText = await generateAiAnswer(docPrompt, msg.author.id, msg.channel_id);
             await sendSmartMessage(msg.channel_id, docText, msg.id, null, 0x1ABC9C);
@@ -1704,40 +1498,39 @@ function connect() {
           // G. Help / Panduan Intent (e.g. "help", "bantuan", "panduan", "aturan bot")
           if (cleanLower === "help" || cleanLower === "bantuan" || cleanLower === "panduan" || cleanLower === "cara pakai" || cleanLower === "aturan bot") {
             const helpCard = {
-              title: "⚡ PANDUAN PINTAS INTERAKSI BOT ARCHITECT",
-              description: "Bot @Architect selalu membaca & memahami maksud Anda secara utuh sebelum mengeksekusi.",
+              title: "QUICK INTERACTION GUIDE",
+              description: "Architect carefully parses full context and intent before executing any request.",
               color: 0x3498DB,
               fields: [
                 {
-                  name: "🎵 1. Musik Mandiri",
-                  value: "• `@Architect play <judul>`\n• `@Architect stop`",
-                  inline: true
-                },
-                {
-                  name: "🎨 2. Gambar AI Flux",
-                  value: "• `@Architect gambar <ide>`\n• `@Architect lukiskan <suasana>`",
-                  inline: true
-                },
-                {
-                  name: "📄 3. Dokumen & Trik Reply",
-                  value: "• `@Architect buatkan dokumen <topik>`\n• Reply gambar dengan: `buat doc nya`\n• Reply teks panjang dengan: `buat lebih pendek`",
+                  name: "🎨 1. Digital AI Art & Images",
+                  value: "• **English:** `@Architect draw <concept>` • `@Architect paint <scene>`\n• **Indonesian:** `@Architect gambar <concept>` • `@Architect lukiskan <suasana>`",
                   inline: false
                 },
                 {
-                  name: "📊 4. Polling Komunitas",
-                  value: "• `@Architect buatkan poll Opsi 1 atau Opsi 2?`",
+                  name: "📝 2. Instant Tech Docs & Smart Replies",
+                  value: "• **English:** `@Architect create doc <topic>` • Reply: `make doc` • `make it shorter`\n• **Indonesian:** `@Architect buatkan dokumen <topik>` • Reply: `buat doc nya` • `buat lebih pendek`",
+                  inline: false
+                },
+                {
+                  name: "📊 3. Interactive Polls & Voting",
+                  value: "• **English:** `@Architect poll Option 1 or Option 2?` • `@Architect vote Topic | A | B`\n• **Indonesian:** `@Architect buatkan poll Opsi 1 atau Opsi 2?` • `@Architect voting Topik | A | B`",
+                  inline: false
+                },
+                {
+                  name: "4. Rapid Team Mention",
+                  value: "• `@Architect tag <name>`\n• `@Architect tag <name> + <question>`",
                   inline: true
                 },
                 {
-                  name: "👥 5. Panggil Rekan Tim",
-                  value: "• `@Architect tag <nama> + <pertanyaan>`",
+                  name: "5. Slash Commands",
+                  value: "• `/stack` • `/docs <module>`\n• `/github` • `/ping`",
                   inline: true
                 }
               ],
-              footer: { text: "Panduan arsitektur lengkap tersedia di channel 📜-rules-and-info" },
+              footer: { text: "Full official guidelines available in 📜-rules-and-info" },
               timestamp: new Date().toISOString()
             };
-
             await discordApi(`/channels/${msg.channel_id}/messages`, {
               method: "POST",
               body: JSON.stringify({
@@ -1856,66 +1649,6 @@ function connect() {
       if (data.t === "INTERACTION_CREATE") {
         const interaction = data.d;
 
-        // Handle Button Clicks (MESSAGE_COMPONENT)
-        if (interaction.type === 3) {
-          const { id: interactionId, token: interactionToken, data: compData, member } = interaction;
-          const customId = compData.custom_id;
-
-          const replyAction = async (textMsg) => {
-            await discordApi(`/interactions/${interactionId}/${interactionToken}/callback`, {
-              method: "POST",
-              body: JSON.stringify({
-                type: 4,
-                data: { content: textMsg, flags: 64 } // Ephemeral response
-              })
-            });
-          };
-
-          if (customId === "music_pause") {
-            if (activeAudioPlayer) {
-              if (isMusicPaused) {
-                activeAudioPlayer.unpause();
-                isMusicPaused = false;
-                await replyAction("▶️ Musik dilanjutkan kembali!");
-              } else {
-                activeAudioPlayer.pause();
-                isMusicPaused = true;
-                await replyAction("⏸️ Musik dijeda (Paused).");
-              }
-            } else {
-              await replyAction("Tidak ada musik yang sedang diputar.");
-            }
-            return;
-          }
-
-          if (customId === "music_stop") {
-            if (activeAudioPlayer) activeAudioPlayer.stop();
-            if (activeVoiceConnection) {
-              activeVoiceConnection.destroy();
-              activeVoiceConnection = null;
-            }
-            currentTrack = null;
-            await replyAction("⏹️ Musik dihentikan dan bot meninggalkan voice room.");
-            return;
-          }
-
-          if (customId === "music_skip") {
-            if (activeAudioPlayer) activeAudioPlayer.stop();
-            await replyAction("⏭️ Lagu dilewati (Skipped).");
-            return;
-          }
-
-          if (customId === "music_loop") {
-            isMusicLooping = !isMusicLooping;
-            await replyAction(`🔁 Mode Loop sekarang: **${isMusicLooping ? "AKTIF" : "NONAKTIF"}**.`);
-            return;
-          }
-
-          if (customId === "music_like") {
-            await replyAction("❤️ Kamu menyukai lagu ini! Disimpan ke daftar favorit.");
-            return;
-          }
-        }
 
         if (interaction.type === 2) { // APPLICATION_COMMAND
           const cmdName = cmdData.name;
@@ -2347,5 +2080,11 @@ server.listen(PORT, () => {
 // Initialize member roster cache
 refreshGuildMembers();
 setInterval(refreshGuildMembers, 15 * 60 * 1000);
+// Launch Diva Music Engine Core
+try {
+  require("./music-runner.js");
+} catch (err) {
+  console.error("[Architect] Warning: Music engine failed to bootstrap:", err.message);
+}
 
 connect();

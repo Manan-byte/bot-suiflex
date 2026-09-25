@@ -1,23 +1,18 @@
 {
-  "name": "suiflex-autorole-bot",
-  "version": "1.0.0",
-  "description": "Suiflex Discord Auto-Role 24/7 Cloud Bot",
+  "name": "suiflex-architect-bot",
+  "version": "3.1.0",
+  "description": "Suiflex Discord Architect 24/7 Cloud Bot (Auto-Role, AI Assistant, Audit Log & Diva Music Engine)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
-    "@distube/ytdl-core": "^4.16.12",
-    "ffmpeg-static": "^5.3.0",
+    "discord.js": "^14.27.0",
     "opusscript": "^0.0.8",
-    "play-dl": "^1.9.7",
     "prism-media": "^1.3.5",
-    "sodium-native": "^5.1.0",
     "tweetnacl": "^1.0.3",
-    "ws": "^8.18.0",
-    "yt-stream": "^1.7.4",
-    "ytdl-core": "^4.11.5"
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@railway/cli": "^5.62.1"
