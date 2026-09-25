@@ -1351,9 +1351,13 @@ function connect() {
 
         const isBotMentioned = isUserMentioned || isRoleMentioned || isReplyToBot;
 
-        if (isBotMentioned) {
+        const isMusicCommand = msg.content && (
+          /^[!/]?(?:play|p|next|playnext|skip|pause|resume|stop|queue|loop|24\/7|lofi)\b/i.test(msg.content.replace(/<[@#][!&]?\d+>/g, "").trim()) ||
+          /^https?:\/\//i.test(msg.content.replace(/<[@#][!&]?\d+>/g, "").trim())
+        );
+
+        if (isBotMentioned && !isMusicCommand) {
           await sendTyping(msg.channel_id);
-          // Clean question text and strip accidental leading punctuation and any mentions
           const cleanQuestion = (msg.content || "")
             .replace(/<@!?[0-9]+>/g, "")
             .replace(/<@&[0-9]+>/g, "")

@@ -306,7 +306,18 @@ async function handleSingleCommand(parsedLine, message, serverQueue, voiceChanne
     requestedBy: message.author.tag
   };
 
-  if (!serverQueue.connection || serverQueue.connection.state.status === VoiceConnectionStatus.Destroyed) {
+  // If connection doesn't exist OR user has switched to a different voice channel:
+  const isAlreadyConnectedToSameChannel = serverQueue.connection &&
+    serverQueue.connection.state.status !== VoiceConnectionStatus.Destroyed &&
+    serverQueue.connection.joinConfig.channelId === voiceChannel.id;
+
+  if (!isAlreadyConnectedToSameChannel) {
+    // If connected to another room, destroy old connection before joining the new room
+    if (serverQueue.connection && serverQueue.connection.state.status !== VoiceConnectionStatus.Destroyed) {
+      try { serverQueue.connection.destroy(); } catch (e) {}
+      serverQueue.connection = null;
+    }
+
     const connection = joinVoiceChannel({
       channelId: voiceChannel.id,
       guildId: message.guild.id,
