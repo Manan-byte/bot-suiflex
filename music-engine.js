@@ -145,6 +145,7 @@ function buildMusicCard(song, isPaused = false, queueLength = 0, loopQueue = fal
     embed.setThumbnail(song.thumbnail);
   }
 
+  // Symmetrical 2x3 Button Matrix
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId('btn_pause_resume')
@@ -157,28 +158,28 @@ function buildMusicCard(song, isPaused = false, queueLength = 0, loopQueue = fal
       .setEmoji('⏭️')
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
-      .setCustomId('btn_loop_queue')
-      .setLabel(`Loop ${loopQueue ? 'ON' : 'OFF'}`)
-      .setEmoji('🔁')
-      .setStyle(loopQueue ? ButtonStyle.Success : ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId('btn_radio_247')
-      .setLabel(`24/7 ${mode247 ? 'ON' : 'OFF'}`)
-      .setEmoji('📻')
-      .setStyle(mode247 ? ButtonStyle.Success : ButtonStyle.Secondary)
-  );
-
-  const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('btn_queue')
-      .setLabel('Antrean')
-      .setEmoji('📜')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
       .setCustomId('btn_stop')
       .setLabel('Stop')
       .setEmoji('⏹️')
       .setStyle(ButtonStyle.Danger)
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('btn_loop_queue')
+      .setLabel(`Loop: ${loopQueue ? 'ON' : 'OFF'}`)
+      .setEmoji('🔁')
+      .setStyle(loopQueue ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('btn_radio_247')
+      .setLabel(`24/7: ${mode247 ? 'ON' : 'OFF'}`)
+      .setEmoji('📻')
+      .setStyle(mode247 ? ButtonStyle.Success : ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId('btn_queue')
+      .setLabel('Antrean')
+      .setEmoji('📜')
+      .setStyle(ButtonStyle.Secondary)
   );
 
   return { embeds: [embed], components: [row1, row2] };
